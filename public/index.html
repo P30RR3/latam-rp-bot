@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LATAM RP — Verificaci&oacute;n & Sincronizaci&oacute;n</title>
+
+    <!-- Fuentes FiveM HUD Táctico -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <style>
+        * {
+            box-sizing: border-box;
+            user-select: none;
+        }
+
+        body {
+            background-color: #07090e;
+            font-family: 'Inter', sans-serif;
+            background-image: 
+                radial-gradient(circle at 50% 0%, rgba(37, 99, 235, 0.18) 0%, transparent 60%),
+                radial-gradient(circle at 100% 100%, rgba(14, 165, 233, 0.08) 0%, transparent 50%),
+                linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+            background-size: 100% 100%, 100% 100%, 28px 28px, 28px 28px;
+        }
+
+        .font-hud {
+            font-family: 'Rajdhani', sans-serif;
+        }
+
+        .font-mono-custom {
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* Sombra de neón de la tarjeta */
+        .card-glow {
+            box-shadow: 0 0 50px -10px rgba(37, 99, 235, 0.25), 0 20px 25px -5px rgba(0, 0, 0, 0.6);
+        }
+
+        /* Opciones de respuesta */
+        .quiz-option {
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .quiz-option:hover {
+            transform: translateY(-3px);
+            border-color: #3b82f6;
+            box-shadow: 0 10px 20px -5px rgba(59, 130, 246, 0.3);
+        }
+
+        .quiz-option.selected {
+            border-color: #3b82f6;
+            background-color: rgba(37, 99, 235, 0.25);
+            color: #93c5fd;
+            box-shadow: 0 0 25px rgba(59, 130, 246, 0.5);
+            transform: scale(1.04);
+        }
+
+        /* Animación de temblor en caso de error */
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            20%, 60% { transform: translateX(-8px); }
+            40%, 80% { transform: translateX(8px); }
+        }
+
+        .shake-effect {
+            animation: shake 0.4s ease-in-out;
+        }
+    </style>
+</head>
+<body class="min-h-screen text-slate-200 flex flex-col justify-between items-center p-4 sm:p-6">
+
+    <!-- TELEMETRÍA EN VIVO (FPS, PING, HORA Y DISCORD PROFILE) -->
+    <header class="w-full max-w-2xl flex items-center justify-between py-3 border-b border-slate-800/80 mb-6 font-mono-custom text-xs">
+        <div class="flex items-center space-x-3">
+            <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span class="text-slate-300 font-bold font-hud tracking-wider uppercase">Brookhaven RP &bull; Online</span>
+        </div>
+        
+        <div class="flex items-center space-x-3">
+            <!-- Badge de usuario conectado vía Discord OAuth2 -->
+            <div id="discordUserBadge" class="hidden items-center space-x-2 bg-slate-900 border border-blue-500/30 px-2 py-0.5 rounded text-blue-400">
+                <img id="userAvatar" src="" alt="avatar" class="w-4 h-4 rounded-full border border-blue-400">
+                <span id="userNameHeader" class="font-bold">Cargando...</span>
+            </div>
+
+            <div class="flex items-center space-x-2 text-slate-400">
+                <span class="bg-slate-900 border border-slate-800 px-2 py-0.5 rounded text-blue-400">PING: <span id="pingCounter">24</span>ms</span>
+                <span class="bg-slate-900 border border-slate-800 px-2 py-0.5 rounded text-emerald-400"><span id="fpsCounter">60</span> FPS</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- CONTENEDOR PRINCIPAL -->
+    <main id="mainContainer" class="w-full max-w-2xl bg-[#0d111a]/95 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 sm:p-10 card-glow relative overflow-hidden transition-all duration-300">
+        
+        <!-- Línea neón FiveM -->
+        <div class="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-blue-600 via-sky-400 to-indigo-600"></div>
+
+        <!-- ========================================== -->
+        <!-- VISTA DEL FORMULARIO                       -->
+        <!-- ========================================== -->
+        <div id="quizView" class="space-y-6">
+            
+            <!-- IDENTIFICACIÓN DEL SERVIDOR -->
+            <div class="flex flex-col sm:flex-row items-center sm:items-start text-center sm:text-left space-y-4 sm:space-y-0 sm:space-x-5">
+                <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center border border-blue-400/40 shadow-lg shadow-blue-500/30 flex-shrink-0">
+                    <span class="font-hud font-extrabold text-3xl text-white tracking-widest">LR</span>
+                </div>
+                <div>
+                    <div class="flex items-center justify-center sm:justify-start space-x-2">
+                        <h1 class="font-hud text-3xl sm:text-4xl font-extrabold text-white tracking-wider uppercase">LATAM ROLEPLAY</h1>
+                        <span class="bg-blue-500/20 text-blue-400 border border-blue-500/30 text-[10px] px-2 py-0.5 rounded font-hud font-bold tracking-wider uppercase">V-Sync</span>
+                    </div>
+                    <p class="text-xs sm:text-sm text-slate-400 mt-1">
+                        Sincroniza tu cuenta de Roblox y verifica tu identidad para ingresar a la ciudad.
+                    </p>
+                </div>
+            </div>
+
+            <!-- PASO 1: INPUT DE USUARIO DE ROBLOX -->
+            <div class="bg-[#090c13] border border-slate-800/90 rounded-2xl p-5 space-y-3">
+                <div class="flex items-center justify-between">
+                    <label class="font-hud font-bold text-sm tracking-wider text-blue-400 uppercase flex items-center gap-2">
+                        <span class="w-2 h-2 rounded-full bg-blue-500"></span>
+                        1. Tu Nombre de Usuario en Roblox
+                    </label>
+                    <span class="text-[10px] text-slate-500 font-mono-custom">Exacto como en Roblox</span>
+                </div>
+                
+                <div class="relative">
+                    <input type="text" id="robloxInput" placeholder="Ej: JuanPro_RP" maxlength="20" autocomplete="off" spellcheck="false"
+                           class="w-full bg-[#131926] border border-slate-700/80 rounded-xl px-4 py-3 text-sm font-mono-custom text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition">
+                </div>
+
+                <!-- PREVIEW EN VIVO DEL APODO DE DISCORD -->
+                <div class="bg-[#131926]/60 border border-slate-800/80 rounded-lg p-2.5 flex items-center justify-between text-xs font-mono-custom">
+                    <span class="text-slate-400">Tu apodo quedar&aacute;:</span>
+                    <span id="tagPreview" class="text-blue-400 font-bold truncate max-w-[280px]">
+                        [Ingresa tu usuario] | ...
+                    </span>
+                </div>
+            </div>
+
+            <!-- PASO 2: QUIZ RÁPIDO ANTI-BOT -->
+            <div class="bg-[#090c13] border border-slate-800/90 rounded-2xl p-5 text-center space-y-3">
+                <span class="text-xs font-hud font-bold tracking-widest text-blue-400 uppercase">
+                    2. Verificaci&oacute;n R&aacute;pida de Seguridad
+                </span>
+                
+                <h2 class="text-2xl sm:text-3xl font-extrabold text-white font-hud tracking-wide">
+                    &iquest;Cu&aacute;nto es 2 + 2?
+                </h2>
+
+                <!-- BOTONES 3, 4, 5 -->
+                <div class="grid grid-cols-3 gap-3.5 pt-1">
+                    <button type="button" onclick="selectAnswer(3, this)" 
+                            class="quiz-option bg-[#131926] border border-slate-800 rounded-xl py-3.5 font-hud text-3xl font-bold text-slate-300">
+                        3
+                    </button>
+                    <button type="button" onclick="selectAnswer(4, this)" 
+                            class="quiz-option bg-[#131926] border border-slate-800 rounded-xl py-3.5 font-hud text-3xl font-bold text-slate-300">
+                        4
+                    </button>
+                    <button type="button" onclick="selectAnswer(5, this)" 
+                            class="quiz-option bg-[#131926] border border-slate-800 rounded-xl py-3.5 font-hud text-3xl font-bold text-slate-300">
+                        5
+                    </button>
+                </div>
+            </div>
+
+            <!-- BOTÓN DE COMPLETAR -->
+            <button id="verifyBtn" onclick="processVerification()" 
+                    class="w-full bg-gradient-to-r from-blue-600 via-sky-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-hud text-2xl font-extrabold tracking-wider py-4 rounded-xl shadow-lg shadow-blue-600/30 transition-all duration-200 flex items-center justify-center space-x-2">
+                <span>&iexcl;LISTO! VINCULAR Y OBTENER ROLES</span>
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 7l5 5m0 0l-5 5m5-5H6"></path>
+                </svg>
+            </button>
+        </div>
+
+        <!-- ========================================== -->
+        <!-- VISTA DE ÉXITO CON PIZARRA DE NEÓN TÁCTIL -->
+        <!-- ========================================== -->
+        <div id="successView" class="hidden space-y-6 text-center">
+            
+            <!-- Checkmark animado -->
+            <div class="w-16 h-16 bg-emerald-500/10 border-2 border-emerald-500/30 rounded-full flex items-center justify-center mx-auto text-emerald-400 shadow-xl shadow-emerald-500/20">
+                <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path>
+                </svg>
+            </div>
+
+            <div>
+                <h2 class="font-hud text-3xl sm:text-4xl font-extrabold text-white tracking-wider uppercase">
+                    &iexcl;CUENTA VINCULADA CON &Eacute;XITO!
+                </h2>
+                <p class="text-xs sm:text-sm text-slate-400 mt-1">
+                    Tu identidad de Roblox ha sido registrada correctamente en la base de datos de LATAM RP.
+                </p>
+            </div>
+
+            <!-- SIMULADOR DE ACCIONES DEL BOT (2 ROLES + TAG) -->
+            <div class="bg-[#090c13] border border-slate-800 rounded-2xl p-4 text-left font-mono-custom text-xs space-y-2.5">
+                <p class="text-slate-400 text-[11px] uppercase tracking-wider font-bold border-b border-slate-800 pb-2">
+                    Acciones aplicadas a tu perfil de Discord:
+                </p>
+                <div class="flex items-center space-x-2 text-slate-300">
+                    <span class="text-emerald-400 font-bold">&#10003;</span>
+                    <span>Apodo sincronizado:</span>
+                    <strong id="finalTag" class="text-blue-400">[Roblox] | UsuarioDiscord</strong>
+                </div>
+                <div class="flex items-center space-x-2 text-slate-300">
+                    <span class="text-emerald-400 font-bold">&#10003;</span>
+                    <span>Rol Asignado #1:</span>
+                    <strong class="text-emerald-400">Ciudadano Oficial LATAM RP</strong>
+                </div>
+                <div class="flex items-center space-x-2 text-slate-300">
+                    <span class="text-emerald-400 font-bold">&#10003;</span>
+                    <span>Rol Asignado #2:</span>
+                    <strong class="text-indigo-400">Acceso Brookhaven Roleplay</strong>
+                </div>
+            </div>
+
+            <!-- PIZARRA DE NEÓN (DIBUJO CON DEDO / MOUSE) -->
+            <div class="relative bg-[#090c13] border border-slate-800 rounded-2xl p-2 overflow-hidden">
+                <div class="flex justify-between items-center px-2 py-1 text-[11px] font-mono-custom text-slate-400">
+                    <span>Pizarra de Ne&oacute;n T&aacute;ctica</span>
+                    <span class="text-blue-400 animate-pulse">&bull; Mueve el dedo o el mouse para dibujar</span>
+                </div>
+                <canvas id="neonCanvas" class="w-full h-44 rounded-xl bg-[#06080d] cursor-crosshair touch-none border border-slate-800/80"></canvas>
+            </div>
+
+            <p class="text-xs text-slate-400">
+                Tus roles y apodo ya están asignados en el servidor de Discord. Ya puedes cerrar esta ventana.
+            </p>
+        </div>
+
+    </main>
+
+    <!-- CANVAS PARA EL CONFETI -->
+    <canvas id="confettiCanvas" class="fixed inset-0 pointer-events-none z-50"></canvas>
+
+    <!-- FOOTER INSTITUCIONAL -->
+    <footer class="w-full max-w-2xl text-center py-4 border-t border-slate-800/80 mt-6 text-xs text-slate-500 space-y-1">
+        <p class="font-hud tracking-widest uppercase font-bold text-slate-400">LATAM ROLEPLAY &bull; SISTEMA DE IDENTIFICACI&Oacute;N V-SYNC</p>
+        <p>&copy; Todos los derechos reservados. Compatible con Brookhaven RP.</p>
+    </footer>
+
+    <!-- SCRIPT DE FRONTEND INTEGRADO CON EL BACKEND -->
+    <script>
+        let selectedValue = null;
+        let discordUser = null;
+
+        const robloxInput = document.getElementById('robloxInput');
+        const tagPreview = document.getElementById('tagPreview');
+
+        // ==========================================
+        // 1. COMPROBAR SESIÓN DE DISCORD OAUTH2
+        // ==========================================
+        window.addEventListener('DOMContentLoaded', async () => {
+            try {
+                const response = await fetch('/api/me');
+                const data = await response.json();
+
+                if (!data.authenticated) {
+                    // Si no está autenticado, redirigir automáticamente al login de Discord
+                    window.location.href = '/auth/login';
+                    return;
+                }
+
+                // Guardar datos del usuario
+                discordUser = data.user;
+                const displayName = discordUser.globalName || discordUser.username;
+
+                // Mostrar badge en la telemetría superior
+                const badge = document.getElementById('discordUserBadge');
+                const avatar = document.getElementById('userAvatar');
+                const nameHeader = document.getElementById('userNameHeader');
+
+                if (discordUser.avatar) {
+                    avatar.src = `https://cdn.discordapp.com/avatars/${discordUser.id}/${discordUser.avatar}.png?size=64`;
+                } else {
+                    avatar.src = `https://cdn.discordapp.com/embed/avatars/0.png`;
+                }
+
+                nameHeader.innerText = displayName;
+                badge.classList.remove('hidden');
+                badge.classList.add('flex');
+
+                // Actualizar tag preview inicial con el nombre real de Discord
+                tagPreview.innerHTML = `[Ingresa tu usuario] | <span class="text-white font-bold">${displayName}</span>`;
+
+            } catch (err) {
+                console.error('Error al conectar con la API de sesión:', err);
+                tagPreview.innerText = '[Ingresa tu usuario] | Discord';
+            }
+        });
+
+        // Actualización dinámica del apodo al escribir en el input
+        robloxInput.addEventListener('input', (e) => {
+            const val = e.target.value.trim();
+            const discordName = discordUser ? (discordUser.globalName || discordUser.username) : 'Discord';
+            if (val.length > 0) {
+                tagPreview.innerHTML = `<span class="text-blue-400 font-bold">[${val}]</span> | ${discordName}`;
+            } else {
+                tagPreview.innerHTML = `<span class="text-blue-400 font-bold">[Ingresa tu usuario]</span> | ${discordName}`;
+            }
+        });
+
+        // ==========================================
+        // SISTEMA DE AUDIO PROCEDURAL (WEB AUDIO API)
+        // ==========================================
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        function playSound(type) {
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+
+            if (type === 'click') {
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(450, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(850, audioCtx.currentTime + 0.04);
+                gain.gain.setValueAtTime(0.12, audioCtx.currentTime);
+                gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.04);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.04);
+            } else if (type === 'success') {
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(523.25, audioCtx.currentTime); // Do5
+                osc.frequency.setValueAtTime(659.25, audioCtx.currentTime + 0.1); // Mi5
+                osc.frequency.setValueAtTime(783.99, audioCtx.currentTime + 0.2); // Sol5
+                gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+                gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.45);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.45);
+            } else if (type === 'error') {
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(140, audioCtx.currentTime);
+                osc.frequency.linearRampToValueAtTime(70, audioCtx.currentTime + 0.2);
+                gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+                gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.25);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.25);
+            }
+        }
+
+        // Selección de botón de la prueba
+        function selectAnswer(val, elem) {
+            playSound('click');
+            selectedValue = val;
+            document.querySelectorAll('.quiz-option').forEach(btn => btn.classList.remove('selected'));
+            elem.classList.add('selected');
+        }
+
+        // ==========================================
+        // PROCESAMIENTO REAL DE VERIFICACIÓN
+        // ==========================================
+        async function processVerification() {
+            const container = document.getElementById('mainContainer');
+            const robloxUser = robloxInput.value.trim();
+
+            // Validación de Roblox
+            if (robloxUser.length < 3) {
+                playSound('error');
+                container.classList.add('shake-effect');
+                setTimeout(() => container.classList.remove('shake-effect'), 400);
+                alert('Por favor ingresa tu nombre de usuario de Roblox antes de continuar.');
+                robloxInput.focus();
+                return;
+            }
+
+            // Validación de la respuesta
+            if (selectedValue === null) {
+                playSound('error');
+                container.classList.add('shake-effect');
+                setTimeout(() => container.classList.remove('shake-effect'), 400);
+                alert('Selecciona una respuesta para la comprobación (3, 4 o 5).');
+                return;
+            }
+
+            // Deshabilitar botón y mostrar estado de carga
+            const btn = document.getElementById('verifyBtn');
+            btn.disabled = true;
+            btn.innerHTML = `
+                <svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-white inline" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span>SINCRONIZANDO CON LATAM RP...</span>
+            `;
+
+            try {
+                // Petición POST a la API del backend
+                const response = await fetch('/api/verify', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        robloxUser: robloxUser,
+                        answer: selectedValue
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    playSound('success');
+
+                    document.getElementById('quizView').classList.add('hidden');
+                    document.getElementById('successView').classList.remove('hidden');
+
+                    const discordName = discordUser ? (discordUser.globalName || discordUser.username) : 'Discord';
+                    document.getElementById('finalTag').innerText = `[${data.robloxUsername}] | ${discordName}`;
+
+                    // Iniciar confeti y pizarra táctil
+                    triggerConfetti();
+                    initNeonCanvas();
+                } else {
+                    playSound('error');
+                    container.classList.add('shake-effect');
+                    setTimeout(() => container.classList.remove('shake-effect'), 400);
+                    alert(data.error || 'No se pudo completar la verificación.');
+                    btn.disabled = false;
+                    btn.innerHTML = `
+                        <span>&iexcl;LISTO! VINCULAR Y OBTENER ROLES</span>
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 7l5 5m0 0l-5 5m5-5H6"></path>
+                        </svg>
+                    `;
+                }
+            } catch (err) {
+                console.error(err);
+                playSound('error');
+                alert('Error al comunicar con el servidor backend del bot.');
+                btn.disabled = false;
+                btn.innerHTML = `
+                    <span>&iexcl;LISTO! VINCULAR Y OBTENER ROLES</span>
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 7l5 5m0 0l-5 5m5-5H6"></path>
+                    </svg>
+                `;
+            }
+        }
+
+        // ==========================================
+        // PIZARRA DE NEÓN TÁCTIL (FINGER DRAW)
+        // ==========================================
+        function initNeonCanvas() {
+            const canvas = document.getElementById('neonCanvas');
+            const ctx = canvas.getContext('2d');
+            
+            canvas.width = canvas.offsetWidth;
+            canvas.height = canvas.offsetHeight;
+
+            let particles = [];
+            let isDrawing = false;
+
+            class Particle {
+                constructor(x, y) {
+                    this.x = x;
+                    this.y = y;
+                    this.size = Math.random() * 4 + 2;
+                    this.color = Math.random() > 0.5 ? '#3b82f6' : '#38bdf8';
+                    this.life = 1;
+                    this.decay = Math.random() * 0.02 + 0.015;
+                    this.vx = (Math.random() - 0.5) * 1.5;
+                    this.vy = (Math.random() - 0.5) * 1.5;
+                }
+                update() {
+                    this.x += this.vx;
+                    this.y += this.vy;
+                    this.life -= this.decay;
+                }
+                draw() {
+                    ctx.save();
+                    ctx.globalAlpha = Math.max(this.life, 0);
+                    ctx.fillStyle = this.color;
+                    ctx.shadowBlur = 12;
+                    ctx.shadowColor = this.color;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.restore();
+                }
+            }
+
+            function addParticles(x, y) {
+                for (let i = 0; i < 4; i++) {
+                    particles.push(new Particle(x, y));
+                }
+            }
+
+            function getPos(e) {
+                const rect = canvas.getBoundingClientRect();
+                const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+                return {
+                    x: clientX - rect.left,
+                    y: clientY - rect.top
+                };
+            }
+
+            canvas.addEventListener('mousedown', (e) => {
+                isDrawing = true;
+                const pos = getPos(e);
+                addParticles(pos.x, pos.y);
+            });
+            window.addEventListener('mouseup', () => isDrawing = false);
+            canvas.addEventListener('mousemove', (e) => {
+                if (!isDrawing) return;
+                const pos = getPos(e);
+                addParticles(pos.x, pos.y);
+            });
+
+            canvas.addEventListener('touchstart', (e) => {
+                const pos = getPos(e);
+                addParticles(pos.x, pos.y);
+            });
+            canvas.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                const pos = getPos(e);
+                addParticles(pos.x, pos.y);
+            });
+
+            function render() {
+                ctx.fillStyle = 'rgba(6, 8, 13, 0.2)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                for (let i = particles.length - 1; i >= 0; i--) {
+                    particles[i].update();
+                    particles[i].draw();
+                    if (particles[i].life <= 0) {
+                        particles.splice(i, 1);
+                    }
+                }
+                requestAnimationFrame(render);
+            }
+            render();
+        }
+
+        // ==========================================
+        // CONFETI CIBERNÉTICO
+        // ==========================================
+        function triggerConfetti() {
+            const canvas = document.getElementById('confettiCanvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+
+            const pieces = [];
+            const colors = ['#2563eb', '#38bdf8', '#6366f1', '#10b981', '#ffffff'];
+
+            for (let i = 0; i < 90; i++) {
+                pieces.push({
+                    x: Math.random() * canvas.width,
+                    y: Math.random() * -canvas.height,
+                    size: Math.random() * 8 + 4,
+                    color: colors[Math.floor(Math.random() * colors.length)],
+                    speed: Math.random() * 5 + 3,
+                    angle: Math.random() * 360,
+                    spin: (Math.random() - 0.5) * 8
+                });
+            }
+
+            function updateConfetti() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                pieces.forEach(p => {
+                    p.y += p.speed;
+                    p.angle += p.spin;
+                    ctx.save();
+                    ctx.translate(p.x, p.y);
+                    ctx.rotate(p.angle * Math.PI / 180);
+                    ctx.fillStyle = p.color;
+                    ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
+                    ctx.restore();
+                });
+
+                if (pieces.some(p => p.y < canvas.height)) {
+                    requestAnimationFrame(updateConfetti);
+                } else {
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                }
+            }
+            updateConfetti();
+        }
+
+        // ==========================================
+        // TELEMETRÍA (FPS Y PING DINÁMICO)
+        // ==========================================
+        let lastTime = performance.now();
+        let frameCount = 0;
+        function updateFPS() {
+            frameCount++;
+            const now = performance.now();
+            if (now - lastTime >= 1000) {
+                document.getElementById('fpsCounter').innerText = frameCount;
+                frameCount = 0;
+                lastTime = now;
+            }
+            requestAnimationFrame(updateFPS);
+        }
+        updateFPS();
+
+        setInterval(() => {
+            document.getElementById('pingCounter').innerText = Math.floor(Math.random() * 6 + 21);
+        }, 3000);
+    </script>
+</body>
+</html>
