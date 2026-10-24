@@ -11,7 +11,7 @@ const client = new Client({
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.MessageContent, // ¡ESTO DEBE ESTAR ACTIVO EN EL PORTAL DE DISCORD!
         GatewayIntentBits.GuildModeration
     ]
 });
@@ -37,18 +37,19 @@ if (fs.existsSync(cogsPath)) {
 }
 
 // =========================================================================
-// MOTOR HEURÍSTICO UNIVERSAL Y DEDUPLICACIÓN (CYPHER ENGINE)
+// MOTOR HEURÍSTICO UNIVERSAL Y DEDUPLICACIÓN (CYPHER ENGINE V2)
 // =========================================================================
 const dedupCache = new Set();
 
-const WARN_KEYWORDS = [/\bwarn(ed|ing)?\b/i, /\badvert(encia|ido)?\b/i, /\binfracci[oó]n\b/i, /\bstrike\b/i, /\baviso\b/i];
-const MOD_IDENTIFIERS = [/(?:moderador|moderator|staff|sancionado por|warned by|issued by|responsable|autor)\s*[:=-]?\s*(?:<@!?(\d{17,20})>|\b(\d{17,20})\b)/i];
+// Palabras clave ampliadas
+const WARN_KEYWORDS = [/\bwarn(ed|ing|s)?\b/i, /\badvert(encia|ido|ir)?\b/i, /\binfracci[oó]n\b/i, /\bstrike\b/i, /\baviso\b/i];
+const MOD_IDENTIFIERS = [/(?:moderador|moderator|staff|sancionado por|warned by|issued by|responsable|autor|oficial)\s*[:=-]?\s*(?:<@!?(\d{17,20})>|\b(\d{17,20})\b)/i];
 const TARGET_IDENTIFIERS = [/(?:usuario|user|member|miembro|target|sancionado|infractor)\s*[:=-]?\s*(?:<@!?(\d{17,20})>|\b(\d{17,20})\b)/i];
 
 async function processModerationMessage(message) {
     if (!message.guild || message.author.id === client.user.id) return;
 
-    // 1. Detección de Tickets (Mantenemos tu lógica original que ya funcionaba)
+    // 1. Detección de Tickets (Chat normal)
     const content = message.content.trim().toLowerCase();
     if (!message.author.bot && content.match(/^[?!.-](claim|reclamar|atender)\b/)) {
         const dedupKey = `ticket:${message.guildId}:${message.author.id}:${Math.floor(Date.now() / 60000)}`;
@@ -61,8 +62,8 @@ async function processModerationMessage(message) {
         return;
     }
 
-    // 2. Análisis Profundo de Embeds (Bots de Moderación)
-    if (!message.author.bot) return; // Solo analizamos respuestas de bots para warns
+    // 2. Análisis Profundo de Embeds (Solo Bots)
+    if (!message.author.bot) return;
 
     const textSegments = [];
     if (message.content) textSegments.push(message.content);
@@ -81,7 +82,10 @@ async function processModerationMessage(message) {
         }
     }
 
-    const fullText = textSegments.join('\n');
+    // Limpiamos TODO el formato Markdown (**, __, ``, ~~) para que el Regex no se asfixie
+    const rawText = textSegments.join('\n');
+    const fullText = rawText.replace(/[*_`~]/g, '').toLowerCase();
+    
     if (!fullText.trim()) return;
 
     // A. Detección de Tickets reclamados por botones/embeds
@@ -105,15 +109,29 @@ async function processModerationMessage(message) {
     if (!isWarn) return;
 
     let staffId = null;
-    for (const regex of MOD_IDENTIFIERS) {
-        const match = fullText.match(regex);
-        if (match) {
-            staffId = match[1] || match[2];
-            break;
+
+    // ESTRATEGIA 1: Interacciones Nativas (Infalible si el Staff usó un Slash Command de Dyno/DracoGuard)
+    if (message.interaction && message.interaction.user) {
+        staffId = message.interaction.user.id;
+    }
+
+    // ESTRATEGIA 2: Extracción por Regex en el texto limpio
+    if (!staffId) {
+        for (const regex of MOD_IDENTIFIERS) {
+            const match = fullText.match(regex);
+            if (match) {
+                staffId = match[1] || match[2];
+                break;
+            }
         }
     }
 
-    if (!staffId) return;
+    // Si detectó que es un warn pero no encontró al Staff, lo imprime en consola para depurar
+    if (!staffId) {
+        console.log(`\n[CYPHER DEBUG] ⚠️ Se detectó un Warn de ${message.author.username}, pero no se encontró la ID del Staff.`);
+        console.log(`[CYPHER DEBUG] Texto analizado (sin markdown):\n${fullText}\n`);
+        return;
+    }
 
     let targetId = 'unknown';
     for (const regex of TARGET_IDENTIFIERS) {
@@ -124,7 +142,7 @@ async function processModerationMessage(message) {
         }
     }
 
-    // Ventana de deduplicación de 30 segundos (Evita doble conteo si el bot manda log y mensaje público)
+    // Ventana de deduplicación de 30 segundos
     const windowBucket = Math.floor(Date.now() / 30000);
     const deduplicationKey = `warn:${message.guildId}:${staffId}:${targetId}:${windowBucket}`;
 
@@ -139,7 +157,7 @@ async function processModerationMessage(message) {
     }
 }
 
-// Escuchar creación y edición de mensajes (Para bots que editan el embed milisegundos después)
+// Escuchar creación y edición de mensajes
 client.on(Events.MessageCreate, processModerationMessage);
 client.on(Events.MessageUpdate, async (oldMessage, newMessage) => {
     if (newMessage.partial) await newMessage.fetch().catch(() => null);
@@ -179,7 +197,6 @@ client.on(Events.GuildAuditLogEntryCreate, async (auditEntry, guild) => {
         const verifiedHuman = await client.users.fetch(responsibleStaffId).catch(() => null);
         if (!verifiedHuman || verifiedHuman.bot) return;
 
-        // Deduplicación para Audit Logs
         const dedupKey = `audit:${action}:${guild.id}:${responsibleStaffId}:${targetId}:${Math.floor(Date.now() / 30000)}`;
         if (dedupCache.has(dedupKey)) return;
         dedupCache.add(dedupKey);
