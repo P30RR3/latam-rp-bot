@@ -12,7 +12,7 @@ function createProgressBar(current, max = 50, size = 10) {
 module.exports = {
     category: 'Expediente y Auditoría Staff',
     commands: [
-        // 13. Warn (Corregido y con puntos asegurados)
+        // 13. Warn con confirmación inmediata de puntos
         {
             data: new SlashCommandBuilder()
                 .setName('warn')
@@ -24,20 +24,22 @@ module.exports = {
                 const target = interaction.options.getUser('usuario');
                 const razon = interaction.options.getString('razon');
 
-                // addWarn ahora suma los puntos atómicamente sin fallos
+                // Guarda la infracción y suma el punto
                 db.addWarn(target.id, razon, interaction.user.id);
+                const updatedStats = db.getStaffStats(interaction.user.id);
 
                 const embed = new EmbedBuilder()
                     .setColor(0xF59E0B)
                     .setAuthor({ name: 'SISTEMA DISCIPLINARIO • LATAM RP', iconURL: interaction.guild.iconURL() })
                     .setTitle('⚠️ INFRACCIÓN ASIGNADA AL EXPEDIENTE')
-                    .setDescription(`Se ha emitido una advertencia oficial contra el ciudadano <@${target.id}>.`)
+                    .setDescription(`Se ha emitido una advertencia oficial contra <@${target.id}>.`)
                     .addFields(
                         { name: '👤 Infractor', value: `\`${target.tag}\` (${target.id})`, inline: true },
                         { name: '🛡️ Moderador', value: `<@${interaction.user.id}>`, inline: true },
+                        { name: '🏆 Puntuación del Staff', value: `**\`${updatedStats.points} PTS\`** *(+1 punto sumado)*`, inline: true },
                         { name: '📄 Causa', value: `\`\`\`${razon}\`\`\``, inline: false }
                     )
-                    .setFooter({ text: 'Infracción indexada. +1 punto asignado al Staff en el ranking.' })
+                    .setFooter({ text: 'Infracción indexada con éxito en la base de datos de LATAM RP.' })
                     .setTimestamp();
 
                 return interaction.reply({ embeds: [embed] });
@@ -96,11 +98,11 @@ module.exports = {
             }
         },
 
-        // 16. Staff Stats (Con Tickets)
+        // 16. Staff Stats
         {
             data: new SlashCommandBuilder()
                 .setName('staff-stats')
-                .setDescription('Despliega la ficha táctica y métricas de un Staff (incluye tickets)')
+                .setDescription('Despliega la ficha táctica y métricas de un Staff (incluye tickets y warns de DracoGuard)')
                 .addUserOption(opt => opt.setName('staff').setDescription('Miembro del Staff (opcional)')),
             async execute(interaction) {
                 const target = interaction.options.getUser('staff') || interaction.user;
@@ -120,8 +122,8 @@ module.exports = {
                         `*(Ban: 5 | Kick: 3 | Ticket: 3 | Timeout: 2 | Warn: 1)*`
                     )
                     .addFields(
-                        { name: '🎫 Tickets Reclamados', value: `\`\`\`yaml\n${stats.tickets || 0} tickets\n\`\`\``, inline: true },
-                        { name: '⚠️ Infracciones (Warns)', value: `\`\`\`yaml\n${stats.warns} warns\n\`\`\``, inline: true },
+                        { name: '🎫 Tickets Atendidos', value: `\`\`\`yaml\n${stats.tickets || 0} tickets\n\`\`\``, inline: true },
+                        { name: '⚠️ Warns / Infracciones', value: `\`\`\`yaml\n${stats.warns || 0} warns\n\`\`\``, inline: true },
                         { name: '⏱️ Silencios (Timeouts)', value: `\`\`\`yaml\n${stats.timeouts} mutes\n\`\`\``, inline: true },
                         { name: '🔨 Baneos Ejecutados', value: `\`\`\`yaml\n${stats.bans} bans\n\`\`\``, inline: true },
                         { name: '👢 Expulsiones (Kicks)', value: `\`\`\`yaml\n${stats.kicks} kicks\n\`\`\``, inline: true },
@@ -132,19 +134,19 @@ module.exports = {
                     const recent = stats.recentActions.slice(0, 4).map(a => 
                         `• **[${a.source || 'Audit'}]** ${a.details} *(<t:${Math.floor(new Date(a.timestamp).getTime()/1000)}:R>)*`
                     ).join('\n');
-                    embed.addFields({ name: '🕒 Actividad Reciente', value: recent, inline: false });
+                    embed.addFields({ name: '🕒 Actividad Reciente Auditada', value: recent, inline: false });
                 }
 
-                embed.setFooter({ text: 'Sistema de Telemetría Staff Universal' }).setTimestamp();
+                embed.setFooter({ text: 'Soporte integrado: DracoGuard, Dyno, Tickets y Cypher' }).setTimestamp();
                 return interaction.reply({ embeds: [embed] });
             }
         },
 
-        // 17. Staff Ranking (Con Tickets y Solo Humanos)
+        // 17. Staff Ranking
         {
             data: new SlashCommandBuilder()
                 .setName('staff-ranking')
-                .setDescription('Tabla de clasificación Staff consolidada (Tickets + Sanciones)'),
+                .setDescription('Tabla de clasificación Staff consolidada (Tickets + Sanciones de DracoGuard/Dyno)'),
             async execute(interaction) {
                 await interaction.deferReply();
 
@@ -158,7 +160,7 @@ module.exports = {
                             humanBoard.push({ ...entry, user });
                         }
                     } catch {
-                        // Usuario no encontrado
+                        // Usuario inaccesible
                     }
                 }
 
@@ -174,7 +176,7 @@ module.exports = {
                     leaderboardText += 
                         `${icon} **#${index + 1}** <@${staff.id}>\n` +
                         `╚═> **${staff.points} PTS** • Total: \`${staff.total}\` ` +
-                        `*(🎫 ${staff.tickets || 0} | ⚠️ ${staff.warns} | ⏱️ ${staff.timeouts} | 🔨 ${staff.bans})*\n\n`;
+                        `*(🎫 ${staff.tickets || 0} | ⚠️ ${staff.warns || 0} | ⏱️ ${staff.timeouts} | 🔨 ${staff.bans})*\n\n`;
                 });
 
                 const embed = new EmbedBuilder()
@@ -200,11 +202,12 @@ module.exports = {
                 .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages),
             async execute(interaction) {
                 db.logStaffAction(interaction.user.id, 'tickets', `Reclamó ticket en #${interaction.channel.name}`, 'Comando-Slash');
+                const stats = db.getStaffStats(interaction.user.id);
 
                 const embed = new EmbedBuilder()
                     .setColor(0x10B981)
                     .setTitle('🎫 TICKET RECLAMADO OFICIALMENTE')
-                    .setDescription(`El oficial <@${interaction.user.id}> ha tomado control de este caso.\n*+3 Puntos sumados al Staff Ranking.*`)
+                    .setDescription(`El oficial <@${interaction.user.id}> ha tomado control de este caso.\n*+3 Puntos sumados al Staff Ranking (Total: ${stats.points} PTS).*`)
                     .setFooter({ text: 'LATAM RP Soporte al Ciudadano' });
 
                 return interaction.reply({ embeds: [embed] });

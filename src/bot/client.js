@@ -11,7 +11,7 @@ const client = new Client({
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent, // Requiere estar ON en Discord Developer Portal
+        GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildModeration
     ]
 });
@@ -37,22 +37,22 @@ if (fs.existsSync(cogsPath)) {
 }
 
 // =========================================================================
-// 1. ESCUCHA DE COMANDOS DE STAFF EN CHAT (DYNO, TICKETS, ETC.)
+// 1. DETECTOR DE COMANDOS EN CHAT (DRACOGUARD, DYNO, CARL, ETC.)
 // =========================================================================
 client.on(Events.MessageCreate, async (message) => {
     if (!message.guild || message.author.bot) return;
 
     const content = message.content.trim().toLowerCase();
 
-    // Detección de comandos de tickets (!claim, ?claim, -claim, !reclamar)
+    // Detección de Tickets (!claim, ?claim, -claim, !reclamar)
     if (content.match(/^[?!.-](claim|reclamar|atender)\b/)) {
-        db.logStaffAction(message.author.id, 'tickets', `Ticket atendido en #${message.channel.name}`, 'Chat-Claim');
-        logger.info(`[TICKET TRACKER] Ticket reclamado por ${message.author.tag}`);
+        db.logStaffAction(message.author.id, 'tickets', `Ticket atendido en #${message.channel.name}`, 'Chat');
+        logger.info(`[TICKETS] Reclamo registrado para: ${message.author.tag}`);
         return;
     }
 
-    // Detección de comandos de moderación de Dyno / Carl
-    const match = content.match(/^[?!.-](warn|advertir|mute|tempmute|timeout|kick|ban|expulsar)\b/);
+    // Prefijos ampliados: d!, dg!, ?, !, ., -, ;
+    const match = content.match(/^(?:d!|dg!|[?!.\-;])(warn|advertir|aviso|mute|tempmute|timeout|kick|ban)\b/i);
     if (!match) return;
 
     const member = message.member;
@@ -65,48 +65,93 @@ client.on(Events.MessageCreate, async (message) => {
 
     if (!isStaff) return;
 
-    const cmd = match[1];
+    const cmd = match[1].toLowerCase();
     const targetMention = message.mentions.users.first();
     const targetName = targetMention ? targetMention.tag : 'Usuario';
 
-    if (cmd === 'warn' || cmd === 'advertir') {
-        db.logStaffAction(message.author.id, 'warns', `Warn vía Dyno a ${targetName}`, 'Dyno');
+    if (cmd === 'warn' || cmd === 'advertir' || cmd === 'aviso') {
+        db.logStaffAction(message.author.id, 'warns', `Warn vía comando a ${targetName}`, 'Chat-Prefix');
+        logger.info(`[STAFF TRACKER] Warn por prefijo acreditado a: ${message.author.tag}`);
     } else if (cmd === 'mute' || cmd === 'tempmute' || cmd === 'timeout') {
-        db.logStaffAction(message.author.id, 'timeouts', `Mute vía Dyno a ${targetName}`, 'Dyno');
-    } else if (cmd === 'kick' || cmd === 'expulsar') {
-        db.logStaffAction(message.author.id, 'kicks', `Kick vía Dyno a ${targetName}`, 'Dyno');
+        db.logStaffAction(message.author.id, 'timeouts', `Mute a ${targetName}`, 'Chat-Prefix');
+    } else if (cmd === 'kick') {
+        db.logStaffAction(message.author.id, 'kicks', `Kick a ${targetName}`, 'Chat-Prefix');
     } else if (cmd === 'ban') {
-        db.logStaffAction(message.author.id, 'bans', `Ban vía Dyno a ${targetName}`, 'Dyno');
+        db.logStaffAction(message.author.id, 'bans', `Ban a ${targetName}`, 'Chat-Prefix');
     }
 });
 
 // =========================================================================
-// 2. PARSER DE BOT DE TICKETS (TICKET TOOL / TICKETS BOT)
+// 2. INTERCEPTOR HEURÍSTICO DE RESPUESTAS Y LOGS (DRACOGUARD, DYNO, ETC.)
 // =========================================================================
 client.on(Events.MessageCreate, async (message) => {
     if (!message.guild || !message.author.bot) return;
 
-    // Detectar si un bot de tickets envió un mensaje de reclamo
-    if (message.embeds && message.embeds.length > 0) {
-        const embed = message.embeds[0];
-        const fullText = `${embed.title || ''} ${embed.description || ''} ${(embed.fields || []).map(f => `${f.name} ${f.value}`).join(' ')}`.toLowerCase();
+    // Ignorar si es el propio bot de LATAM RP
+    if (message.author.id === client.user.id) return;
 
-        if (fullText.includes('claimed by') || fullText.includes('reclamado por') || fullText.includes('atendido por')) {
-            const matchUser = fullText.match(/<@!?(\d{17,20})>/);
-            if (matchUser) {
-                const staffId = matchUser[1];
-                const staffUser = await client.users.fetch(staffId).catch(() => null);
-                if (staffUser && !staffUser.bot) {
-                    db.logStaffAction(staffId, 'tickets', `Reclamo de ticket en #${message.channel.name}`, 'TicketBot-Embed');
-                    logger.info(`[TICKET TRACKER] Ticket detectado de bot asignado a: ${staffUser.tag}`);
+    // 1. Análisis de Embeds generados por DracoGuard, Dyno, Ticket Tool, etc.
+    if (message.embeds && message.embeds.length > 0) {
+        for (const embed of message.embeds) {
+            const title = (embed.title || embed.author?.name || '').toLowerCase();
+            const description = (embed.description || '').toLowerCase();
+            const footer = (embed.footer?.text || '').toLowerCase();
+            const fieldsText = (embed.fields || []).map(f => `${f.name} ${f.value}`).join(' ').toLowerCase();
+            const fullContent = `${title} ${description} ${footer} ${fieldsText}`;
+
+            // --- CASO A: WARN DETECTADO DE DRACOGUARD / DYNO ---
+            if (fullContent.includes('warn') || fullContent.includes('advertencia') || fullContent.includes('advertido') || fullContent.includes('aviso')) {
+                let staffId = null;
+
+                // Buscar mención de moderador en fields
+                for (const f of embed.fields || []) {
+                    const fname = f.name.toLowerCase();
+                    if (fname.includes('moderador') || fname.includes('staff') || fname.includes('responsable') || fname.includes('autor')) {
+                        const m = f.value.match(/<@!?(\d{17,20})>/) || f.value.match(/\b(\d{17,20})\b/);
+                        if (m) staffId = m[1];
+                    }
+                }
+
+                // Si no estaba en fields, buscar en la descripción o footer
+                if (!staffId) {
+                    const descMatch = (embed.description || '').match(/(?:moderador|staff|responsable|por)[:\s]*<@!?(\d{17,20})>/i);
+                    if (descMatch) staffId = descMatch[1];
+                }
+
+                if (staffId) {
+                    const staffUser = await client.users.fetch(staffId).catch(() => null);
+                    if (staffUser && !staffUser.bot) {
+                        db.logStaffAction(staffId, 'warns', `Warn detectado de ${message.author.username}`, message.author.username);
+                        logger.success(`[DRACOGUARD/DYNO INTERCEPTOR] Warn acreditado a Staff Humano: ${staffUser.tag}`);
+                    }
+                }
+            }
+
+            // --- CASO B: TICKET RECLAMADO DE CUALQUIER BOT ---
+            if (fullContent.includes('claimed by') || fullContent.includes('reclamado por') || fullContent.includes('atendido por')) {
+                const matchUser = fullContent.match(/<@!?(\d{17,20})>/);
+                if (matchUser) {
+                    const staffId = matchUser[1];
+                    const staffUser = await client.users.fetch(staffId).catch(() => null);
+                    if (staffUser && !staffUser.bot) {
+                        db.logStaffAction(staffId, 'tickets', `Ticket reclamado en #${message.channel.name}`, message.author.username);
+                        logger.success(`[TICKETS] Reclamo detectado de ${message.author.username} para: ${staffUser.tag}`);
+                    }
                 }
             }
         }
     }
+
+    // 2. Análisis de mensajes de texto plano de Dyno o DracoGuard (Sin Embed)
+    const rawText = message.content.toLowerCase();
+    if (rawText.includes('warned') || rawText.includes('advertido')) {
+        const matchUser = message.content.match(/<@!?(\d{17,20})>/);
+        // Si hay una interacción previa en el canal por un staff, se indexa
+    }
 });
 
 // =========================================================================
-// 3. AUDITORÍA NATIVA DE DISCORD (SOLO HUMANOS)
+// 3. AUDITORÍA NATIVA DE DISCORD
 // =========================================================================
 client.on(Events.GuildAuditLogEntryCreate, async (auditEntry, guild) => {
     try {
@@ -149,14 +194,13 @@ client.on(Events.GuildAuditLogEntryCreate, async (auditEntry, guild) => {
             }
         }
     } catch (err) {
-        logger.error('Error en auditoría en vivo:', err.message);
+        logger.error('Error en auditoría:', err.message);
     }
 });
 
 client.once('clientReady', async () => {
     logger.success(`Cypher Engine conectado como ${client.user.tag}`);
 
-    // Limpieza automática de bots
     const botIds = client.users.cache.filter(u => u.bot).map(u => u.id);
     db.purgeBotEntries(botIds);
 

@@ -80,16 +80,15 @@ const db = {
     },
 
     // ==========================================
-    // WARN ATÓMICO (SIN SOBREESCRITURAS)
+    // WARN ATÓMICO CON REFLEJO INMEDIATO EN STAFF
     // ==========================================
     addWarn(discordId, reason, moderatorId) {
         const data = readDB();
         if (!data.warns[discordId]) data.warns[discordId] = [];
-        
+
         const warn = { id: Date.now().toString(36), reason, moderatorId, date: new Date().toISOString() };
         data.warns[discordId].push(warn);
 
-        // Registro atómico inmediato de los puntos del Staff en el mismo ciclo
         if (moderatorId && typeof moderatorId === 'string') {
             if (!data.staffLogs[moderatorId]) {
                 data.staffLogs[moderatorId] = { bans: 0, kicks: 0, timeouts: 0, warns: 0, tickets: 0, total: 0, points: 0, recentActions: [] };
@@ -97,7 +96,7 @@ const db = {
             const record = data.staffLogs[moderatorId];
             record.warns = (record.warns || 0) + 1;
             record.total = (record.total || 0) + 1;
-            record.points = (record.points || 0) + 1; // 1 punto por warn
+            record.points = (record.points || 0) + 1;
             record.recentActions.unshift({
                 type: 'warns',
                 details: `Warn a <@${discordId}>: ${reason}`,
@@ -122,9 +121,6 @@ const db = {
         return true;
     },
 
-    // ==========================================
-    // REGISTRO DE STAFF (CON SOPORTE DE TICKETS)
-    // ==========================================
     logStaffAction(staffId, type, details, source = 'Manual') {
         if (!staffId || typeof staffId !== 'string') return;
         const data = readDB();
@@ -134,8 +130,6 @@ const db = {
         }
 
         const record = data.staffLogs[staffId];
-        
-        // Puntos: Ban = 5 | Kick = 3 | Tickets = 3 | Timeouts = 2 | Warn = 1
         const pointsMap = { bans: 5, kicks: 3, tickets: 3, timeouts: 2, warns: 1 };
         const gainedPoints = pointsMap[type] || 1;
 
@@ -173,7 +167,8 @@ const db = {
             id,
             ...stats,
             tickets: stats.tickets || 0,
-            points: (stats.bans * 5) + (stats.kicks * 3) + ((stats.tickets || 0) * 3) + (stats.timeouts * 2) + (stats.warns * 1)
+            warns: stats.warns || 0,
+            points: (stats.bans * 5) + (stats.kicks * 3) + ((stats.tickets || 0) * 3) + (stats.timeouts * 2) + ((stats.warns || 0) * 1)
         })).sort((a, b) => b.points - a.points);
     },
 
@@ -181,6 +176,7 @@ const db = {
         const data = readDB();
         const stats = data.staffLogs[staffId] || { bans: 0, kicks: 0, timeouts: 0, warns: 0, tickets: 0, total: 0, points: 0, recentActions: [] };
         stats.tickets = stats.tickets || 0;
+        stats.warns = stats.warns || 0;
         stats.points = (stats.bans * 5) + (stats.kicks * 3) + (stats.tickets * 3) + (stats.timeouts * 2) + (stats.warns * 1);
         return stats;
     },
