@@ -1,7 +1,6 @@
 // src/bot/cogs/expediente.js
-const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits, AuditLogEvent } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
 const db = require('../../database/db');
-const { generateAIContent } = require('../../utils/gemini');
 
 function createProgressBar(current, max = 50, size = 10) {
     const percentage = Math.min(Math.max(current / max, 0), 1);
@@ -13,17 +12,19 @@ function createProgressBar(current, max = 50, size = 10) {
 module.exports = {
     category: 'Expediente y Auditoría Staff',
     commands: [
-        // 13. Warn interno
+        // 13. Warn (Corregido y con puntos asegurados)
         {
             data: new SlashCommandBuilder()
                 .setName('warn')
                 .setDescription('[STAFF] Registra un llamado de atención formal en el expediente')
                 .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
-                .addUserOption(opt => opt.setName('usuario').setDescription('Usuario').setRequired(true))
+                .addUserOption(opt => opt.setName('usuario').setDescription('Usuario a sancionar').setRequired(true))
                 .addStringOption(opt => opt.setName('razon').setDescription('Causa justificada').setRequired(true)),
             async execute(interaction) {
                 const target = interaction.options.getUser('usuario');
                 const razon = interaction.options.getString('razon');
+
+                // addWarn ahora suma los puntos atómicamente sin fallos
                 db.addWarn(target.id, razon, interaction.user.id);
 
                 const embed = new EmbedBuilder()
@@ -36,7 +37,7 @@ module.exports = {
                         { name: '🛡️ Moderador', value: `<@${interaction.user.id}>`, inline: true },
                         { name: '📄 Causa', value: `\`\`\`${razon}\`\`\``, inline: false }
                     )
-                    .setFooter({ text: 'Infracción indexada en el registro de auditoría de Staff.' })
+                    .setFooter({ text: 'Infracción indexada. +1 punto asignado al Staff en el ranking.' })
                     .setTimestamp();
 
                 return interaction.reply({ embeds: [embed] });
@@ -91,29 +92,19 @@ module.exports = {
             async execute(interaction) {
                 const target = interaction.options.getUser('usuario');
                 db.clearWarns(target.id);
-                return interaction.reply({
-                    embeds: [
-                        new EmbedBuilder()
-                            .setColor(0x10B981)
-                            .setTitle('🧹 EXPEDIENTE PURGADO')
-                            .setDescription(`Se ha restablecido el registro de antecedentes para <@${target.id}>.`)
-                    ]
-                });
+                return interaction.reply({ content: `🧹 Se ha restablecido el expediente de <@${target.id}>.` });
             }
         },
 
-        // 16. Staff Stats
+        // 16. Staff Stats (Con Tickets)
         {
             data: new SlashCommandBuilder()
                 .setName('staff-stats')
-                .setDescription('Despliega la ficha táctica y métricas operacionales de un Staff')
+                .setDescription('Despliega la ficha táctica y métricas de un Staff (incluye tickets)')
                 .addUserOption(opt => opt.setName('staff').setDescription('Miembro del Staff (opcional)')),
             async execute(interaction) {
                 const target = interaction.options.getUser('staff') || interaction.user;
-
-                if (target.bot) {
-                    return interaction.reply({ content: '❌ Los bots no poseen expedientes de Staff.', ephemeral: true });
-                }
+                if (target.bot) return interaction.reply({ content: '❌ Los bots no tienen expediente de Staff.', ephemeral: true });
 
                 const stats = db.getStaffStats(target.id);
 
@@ -126,22 +117,22 @@ module.exports = {
                         `> **Rango de Actividad:** \`${stats.points > 100 ? 'DIVISIÓN ALFA 🎖️' : stats.points > 40 ? 'OPERATIVO ACTIVO 🔹' : 'EN DESARROLLO ▫️'}\`\n` +
                         `> **Efectividad Global:** \`${createProgressBar(stats.points, 120, 12)}\`\n` +
                         `> **Puntuación Táctica Acumulada:** **\`${stats.points} PTS\`**\n` +
-                        `*(5 pts/Ban • 3 pts/Kick • 2 pts/Timeout • 1 pt/Warn)*`
+                        `*(Ban: 5 | Kick: 3 | Ticket: 3 | Timeout: 2 | Warn: 1)*`
                     )
                     .addFields(
-                        { name: '🔨 Baneos Ejecutados', value: `\`\`\`yaml\n${stats.bans} registros\n\`\`\``, inline: true },
-                        { name: '👢 Expulsiones (Kicks)', value: `\`\`\`yaml\n${stats.kicks} registros\n\`\`\``, inline: true },
-                        { name: '⏱️ Silencios (Timeouts)', value: `\`\`\`yaml\n${stats.timeouts} registros\n\`\`\``, inline: true },
-                        { name: '⚠️ Infracciones (Warns)', value: `\`\`\`yaml\n${stats.warns} registros\n\`\`\``, inline: true },
-                        { name: '📊 Total Acciones', value: `\`\`\`yaml\n${stats.total} intervenciones\n\`\`\``, inline: true },
-                        { name: '🌐 Fuentes Auditadas', value: `\`\`\`fix\nDyno, Discord UI & Cypher\n\`\`\``, inline: true }
+                        { name: '🎫 Tickets Reclamados', value: `\`\`\`yaml\n${stats.tickets || 0} tickets\n\`\`\``, inline: true },
+                        { name: '⚠️ Infracciones (Warns)', value: `\`\`\`yaml\n${stats.warns} warns\n\`\`\``, inline: true },
+                        { name: '⏱️ Silencios (Timeouts)', value: `\`\`\`yaml\n${stats.timeouts} mutes\n\`\`\``, inline: true },
+                        { name: '🔨 Baneos Ejecutados', value: `\`\`\`yaml\n${stats.bans} bans\n\`\`\``, inline: true },
+                        { name: '👢 Expulsiones (Kicks)', value: `\`\`\`yaml\n${stats.kicks} kicks\n\`\`\``, inline: true },
+                        { name: '📊 Total de Acciones', value: `\`\`\`yaml\n${stats.total} intervenciones\n\`\`\``, inline: true }
                     );
 
                 if (stats.recentActions && stats.recentActions.length > 0) {
                     const recent = stats.recentActions.slice(0, 4).map(a => 
                         `• **[${a.source || 'Audit'}]** ${a.details} *(<t:${Math.floor(new Date(a.timestamp).getTime()/1000)}:R>)*`
                     ).join('\n');
-                    embed.addFields({ name: '🕒 Actividad Reciente Auditada', value: recent, inline: false });
+                    embed.addFields({ name: '🕒 Actividad Reciente', value: recent, inline: false });
                 }
 
                 embed.setFooter({ text: 'Sistema de Telemetría Staff Universal' }).setTimestamp();
@@ -149,21 +140,17 @@ module.exports = {
             }
         },
 
-        // 17. Staff Ranking (SOLO HUMANOS)
+        // 17. Staff Ranking (Con Tickets y Solo Humanos)
         {
             data: new SlashCommandBuilder()
                 .setName('staff-ranking')
-                .setDescription('Tabla de honor y ranking de actividad Staff consolidada (SOLO HUMANOS)'),
+                .setDescription('Tabla de clasificación Staff consolidada (Tickets + Sanciones)'),
             async execute(interaction) {
                 await interaction.deferReply();
 
                 const rawBoard = db.getStaffLeaderboard();
-                if (rawBoard.length === 0) {
-                    return interaction.editReply({ content: 'No hay actividades registradas aún en el sistema de auditoría.' });
-                }
-
-                // FILTRO ESTRICTO: Descartar bots en tiempo real
                 const humanBoard = [];
+
                 for (const entry of rawBoard) {
                     try {
                         const user = await interaction.client.users.fetch(entry.id).catch(() => null);
@@ -171,56 +158,56 @@ module.exports = {
                             humanBoard.push({ ...entry, user });
                         }
                     } catch {
-                        // Si el usuario no existe, omitir
+                        // Usuario no encontrado
                     }
                 }
 
                 if (humanBoard.length === 0) {
-                    return interaction.editReply({ content: 'No se encontraron miembros humanos con sanciones registradas todavía.' });
+                    return interaction.editReply({ content: 'Aún no hay moderadores con puntos registrados en la base de datos.' });
                 }
 
-                const topMembers = humanBoard.slice(0, 10);
                 let leaderboardText = '';
+                const rankIcons = ['👑', '🥈', '🥉', '🔹', '🔹', '▫️', '▫️', '▫️', '▫️', '▫️'];
 
-                topMembers.forEach((staff, index) => {
-                    const rankIcons = ['👑', '🥈', '🥉', '🔹', '🔹', '▫️', '▫️', '▫️', '▫️', '▫️'];
+                humanBoard.slice(0, 10).forEach((staff, index) => {
                     const icon = rankIcons[index] || '▫️';
                     leaderboardText += 
-                        `${icon} **#${index + 1}** <@${staff.id}> (\`${staff.user.username}\`)\n` +
+                        `${icon} **#${index + 1}** <@${staff.id}>\n` +
                         `╚═> **${staff.points} PTS** • Total: \`${staff.total}\` ` +
-                        `*(🔨 ${staff.bans} | 👢 ${staff.kicks} | ⏱️ ${staff.timeouts} | ⚠️ ${staff.warns})*\n\n`;
+                        `*(🎫 ${staff.tickets || 0} | ⚠️ ${staff.warns} | ⏱️ ${staff.timeouts} | 🔨 ${staff.bans})*\n\n`;
                 });
 
                 const embed = new EmbedBuilder()
                     .setColor(0xF59E0B)
                     .setAuthor({ name: 'ALTO MANDO • DEPARTAMENTO DE AUDITORÍA', iconURL: interaction.guild.iconURL() })
-                    .setTitle('🏆 CLASIFICACIÓN GENERAL DE ACTIVIDAD STAFF (HUMANOS)')
+                    .setTitle('🏆 CLASIFICACIÓN GENERAL DE ACTIVIDAD STAFF')
                     .setDescription(
-                        `*Auditoría de moderadores humanos: analiza comandos de chat de Dyno, embeds y moderación manual.*\n\n` +
+                        `*Clasificación de moderadores: incluye atención de tickets, comandos y sanciones.*\n\n` +
                         leaderboardText
                     )
-                    .setFooter({ text: 'LATAM RP Staff Protocol • 5pts Ban | 3pts Kick | 2pts Timeout | 1pt Warn' })
+                    .setFooter({ text: 'LATAM RP Staff Protocol • Ticket: 3pts | Ban: 5pts | Timeout: 2pts | Warn: 1pt' })
                     .setTimestamp();
 
                 return interaction.editReply({ embeds: [embed] });
             }
         },
 
-        // 18. Purgar bots del ranking (Comando de limpieza para el Admin)
+        // 18. Reclamar Ticket (Nativo)
         {
             data: new SlashCommandBuilder()
-                .setName('staff-purgar-bots')
-                .setDescription('[ADMIN] Elimina instantáneamente a Dyno y a todos los bots del Staff Ranking')
-                .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+                .setName('ticket-reclamar')
+                .setDescription('[STAFF] Reclama la atención de este ticket y suma 3 puntos a tu ranking')
+                .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages),
             async execute(interaction) {
-                await interaction.deferReply({ ephemeral: true });
+                db.logStaffAction(interaction.user.id, 'tickets', `Reclamó ticket en #${interaction.channel.name}`, 'Comando-Slash');
 
-                const botIds = interaction.guild.members.cache.filter(m => m.user.bot).map(m => m.user.id);
-                const count = db.purgeBotEntries(botIds);
+                const embed = new EmbedBuilder()
+                    .setColor(0x10B981)
+                    .setTitle('🎫 TICKET RECLAMADO OFICIALMENTE')
+                    .setDescription(`El oficial <@${interaction.user.id}> ha tomado control de este caso.\n*+3 Puntos sumados al Staff Ranking.*`)
+                    .setFooter({ text: 'LATAM RP Soporte al Ciudadano' });
 
-                return interaction.editReply({
-                    content: `🧹 **Purga completada:** Se eliminaron \`${count}\` cuentas bot que estaban ensuciando la tabla de posiciones.`
-                });
+                return interaction.reply({ embeds: [embed] });
             }
         }
     ]

@@ -11,7 +11,7 @@ const client = new Client({
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.MessageContent, // Requiere estar ON en Discord Developer Portal
         GatewayIntentBits.GuildModeration
     ]
 });
@@ -37,87 +37,68 @@ if (fs.existsSync(cogsPath)) {
 }
 
 // =========================================================================
-// 1. ESCUCHA DE COMANDOS DE MODERACIÓN EN CHAT (DYNO, CARL-BOT, ETC.)
+// 1. ESCUCHA DE COMANDOS DE STAFF EN CHAT (DYNO, TICKETS, ETC.)
 // =========================================================================
 client.on(Events.MessageCreate, async (message) => {
-    // Si el autor es un bot o no es del servidor, ignorar
     if (!message.guild || message.author.bot) return;
 
     const content = message.content.trim().toLowerCase();
-    // Prefijos típicos: ?, !, ., -
+
+    // Detección de comandos de tickets (!claim, ?claim, -claim, !reclamar)
+    if (content.match(/^[?!.-](claim|reclamar|atender)\b/)) {
+        db.logStaffAction(message.author.id, 'tickets', `Ticket atendido en #${message.channel.name}`, 'Chat-Claim');
+        logger.info(`[TICKET TRACKER] Ticket reclamado por ${message.author.tag}`);
+        return;
+    }
+
+    // Detección de comandos de moderación de Dyno / Carl
     const match = content.match(/^[?!.-](warn|advertir|mute|tempmute|timeout|kick|ban|expulsar)\b/);
     if (!match) return;
 
-    // Verificar si el usuario que ejecutó el comando tiene permisos de staff
     const member = message.member;
     if (!member) return;
 
-    const hasStaffPerms = member.permissions.has(PermissionFlagsBits.ModerateMembers) ||
-                          member.permissions.has(PermissionFlagsBits.KickMembers) ||
-                          member.permissions.has(PermissionFlagsBits.BanMembers) ||
-                          member.permissions.has(PermissionFlagsBits.ManageMessages);
+    const isStaff = member.permissions.has(PermissionFlagsBits.ModerateMembers) ||
+                    member.permissions.has(PermissionFlagsBits.KickMembers) ||
+                    member.permissions.has(PermissionFlagsBits.BanMembers) ||
+                    member.permissions.has(PermissionFlagsBits.ManageMessages);
 
-    if (!hasStaffPerms) return;
+    if (!isStaff) return;
 
     const cmd = match[1];
     const targetMention = message.mentions.users.first();
     const targetName = targetMention ? targetMention.tag : 'Usuario';
 
     if (cmd === 'warn' || cmd === 'advertir') {
-        db.logStaffAction(message.author.id, 'warns', `Warn con Dyno a ${targetName}`, 'Dyno/Chat');
-        logger.info(`[STAFF TRACKER] Warn ejecutado por HUMANO: ${message.author.tag}`);
+        db.logStaffAction(message.author.id, 'warns', `Warn vía Dyno a ${targetName}`, 'Dyno');
     } else if (cmd === 'mute' || cmd === 'tempmute' || cmd === 'timeout') {
-        db.logStaffAction(message.author.id, 'timeouts', `Mute con Dyno a ${targetName}`, 'Dyno/Chat');
-        logger.info(`[STAFF TRACKER] Mute ejecutado por HUMANO: ${message.author.tag}`);
+        db.logStaffAction(message.author.id, 'timeouts', `Mute vía Dyno a ${targetName}`, 'Dyno');
     } else if (cmd === 'kick' || cmd === 'expulsar') {
-        db.logStaffAction(message.author.id, 'kicks', `Kick con Dyno a ${targetName}`, 'Dyno/Chat');
-        logger.info(`[STAFF TRACKER] Kick ejecutado por HUMANO: ${message.author.tag}`);
+        db.logStaffAction(message.author.id, 'kicks', `Kick vía Dyno a ${targetName}`, 'Dyno');
     } else if (cmd === 'ban') {
-        db.logStaffAction(message.author.id, 'bans', `Ban con Dyno a ${targetName}`, 'Dyno/Chat');
-        logger.info(`[STAFF TRACKER] Ban ejecutado por HUMANO: ${message.author.tag}`);
+        db.logStaffAction(message.author.id, 'bans', `Ban vía Dyno a ${targetName}`, 'Dyno');
     }
 });
 
 // =========================================================================
-// 2. PARSER DE EMBEDS DE REGISTROS DE DYNO (CANALES DE LOGS)
+// 2. PARSER DE BOT DE TICKETS (TICKET TOOL / TICKETS BOT)
 // =========================================================================
 client.on(Events.MessageCreate, async (message) => {
     if (!message.guild || !message.author.bot) return;
 
-    // Solo nos interesa si es un bot de moderación como Dyno
-    if (!message.author.username.toLowerCase().includes('dyno') && !message.author.username.toLowerCase().includes('carl')) return;
-
+    // Detectar si un bot de tickets envió un mensaje de reclamo
     if (message.embeds && message.embeds.length > 0) {
         const embed = message.embeds[0];
-        const title = (embed.title || embed.author?.name || '').toLowerCase();
-        const description = (embed.description || '').toLowerCase();
+        const fullText = `${embed.title || ''} ${embed.description || ''} ${(embed.fields || []).map(f => `${f.name} ${f.value}`).join(' ')}`.toLowerCase();
 
-        // Extraer moderador responsable dentro de los campos del Embed de Dyno
-        let modId = null;
-        for (const field of embed.fields || []) {
-            if (field.name.toLowerCase().includes('moderator') || field.name.toLowerCase().includes('moderador')) {
-                const matchId = field.value.match(/\b(\d{17,20})\b/);
-                if (matchId) modId = matchId[1];
-            }
-        }
-
-        if (!modId) {
-            const descMatch = (embed.description || '').match(/(?:moderator|moderador):\s*<@!?(\d{17,20})>/i);
-            if (descMatch) modId = descMatch[1];
-        }
-
-        if (modId) {
-            // Verificar que no le estemos dando puntos a otro bot
-            const modUser = await client.users.fetch(modId).catch(() => null);
-            if (modUser && !modUser.bot) {
-                if (title.includes('warn') || description.includes('warn')) {
-                    db.logStaffAction(modId, 'warns', 'Warn detectado en Logs de Dyno', 'Dyno-Log');
-                } else if (title.includes('mute') || description.includes('mute')) {
-                    db.logStaffAction(modId, 'timeouts', 'Mute detectado en Logs de Dyno', 'Dyno-Log');
-                } else if (title.includes('ban')) {
-                    db.logStaffAction(modId, 'bans', 'Ban detectado en Logs de Dyno', 'Dyno-Log');
-                } else if (title.includes('kick')) {
-                    db.logStaffAction(modId, 'kicks', 'Kick detectado en Logs de Dyno', 'Dyno-Log');
+        if (fullText.includes('claimed by') || fullText.includes('reclamado por') || fullText.includes('atendido por')) {
+            const matchUser = fullText.match(/<@!?(\d{17,20})>/);
+            if (matchUser) {
+                const staffId = matchUser[1];
+                const staffUser = await client.users.fetch(staffId).catch(() => null);
+                if (staffUser && !staffUser.bot) {
+                    db.logStaffAction(staffId, 'tickets', `Reclamo de ticket en #${message.channel.name}`, 'TicketBot-Embed');
+                    logger.info(`[TICKET TRACKER] Ticket detectado de bot asignado a: ${staffUser.tag}`);
                 }
             }
         }
@@ -125,7 +106,7 @@ client.on(Events.MessageCreate, async (message) => {
 });
 
 // =========================================================================
-// 3. AUDITORÍA NATIVA DE DISCORD (CON FILTRO INFRANQUEABLE ANTI-BOT)
+// 3. AUDITORÍA NATIVA DE DISCORD (SOLO HUMANOS)
 // =========================================================================
 client.on(Events.GuildAuditLogEntryCreate, async (auditEntry, guild) => {
     try {
@@ -138,29 +119,24 @@ client.on(Events.GuildAuditLogEntryCreate, async (auditEntry, guild) => {
         let responsibleStaffId = null;
         let sourceName = 'Discord UI';
 
-        // SI ES HUMANO: Se le asigna directamente
         if (!executorUser.bot) {
             responsibleStaffId = executorUser.id;
         } else {
-            // SI ES UN BOT (Ej: Dyno ejecutó el Ban en la API): Extraer al humano de la razón
             sourceName = executorUser.username;
             if (reason) {
                 const matchId = reason.match(/\b(\d{17,20})\b/);
                 const matchTag = reason.match(/\[([^\]]+)\]/);
-                if (matchId) {
-                    responsibleStaffId = matchId[1];
-                } else if (matchTag) {
+                if (matchId) responsibleStaffId = matchId[1];
+                else if (matchTag) {
                     const found = guild.members.cache.find(m => m.user.tag === matchTag[1].trim() || m.user.username === matchTag[1].trim());
                     if (found) responsibleStaffId = found.id;
                 }
             }
         }
 
-        // BARRERA DE HIERRO: Si no se logró extraer a un humano, ABORTAR. Jamás dar puntos al bot.
         if (!responsibleStaffId) return;
-
         const verifiedHuman = await client.users.fetch(responsibleStaffId).catch(() => null);
-        if (!verifiedHuman || verifiedHuman.bot) return; // Si sigue siendo bot, descartar.
+        if (!verifiedHuman || verifiedHuman.bot) return;
 
         if (action === AuditLogEvent.MemberBanAdd) {
             db.logStaffAction(responsibleStaffId, 'bans', `Ban a <@${targetId}>`, sourceName);
@@ -180,10 +156,9 @@ client.on(Events.GuildAuditLogEntryCreate, async (auditEntry, guild) => {
 client.once('clientReady', async () => {
     logger.success(`Cypher Engine conectado como ${client.user.tag}`);
 
-    // Limpieza automática preventiva de cualquier bot guardado previamente
-    const knownBotIds = client.users.cache.filter(u => u.bot).map(u => u.id);
-    const cleaned = db.purgeBotEntries(knownBotIds);
-    if (cleaned > 0) logger.warn(`[PURGA] Se eliminaron ${cleaned} cuentas bot del Staff Ranking.`);
+    // Limpieza automática de bots
+    const botIds = client.users.cache.filter(u => u.bot).map(u => u.id);
+    db.purgeBotEntries(botIds);
 
     const rest = new REST({ version: '10' }).setToken(config.botToken);
     const slashCommandsPayload = Array.from(client.commands.values()).map(cmd => cmd.data.toJSON());
@@ -194,7 +169,7 @@ client.once('clientReady', async () => {
                 Routes.applicationGuildCommands(config.clientId, config.guildId),
                 { body: slashCommandsPayload }
             );
-            logger.success(`Comandos sincronizados con éxito.`);
+            logger.success(`30 Comandos Slash sincronizados con éxito.`);
         }
     } catch (err) {
         logger.error('Error registrando comandos:', err.message);
@@ -210,7 +185,7 @@ client.on('interactionCreate', async (interaction) => {
         await cmd.execute(interaction);
     } catch (err) {
         logger.error(`Excepción en /${interaction.commandName}:`, err.message);
-        const reply = { content: '❌ Ocurrió un error al procesar esta instrucción.', ephemeral: true };
+        const reply = { content: '❌ Error al procesar el comando.', ephemeral: true };
         if (interaction.deferred || interaction.replied) await interaction.editReply(reply).catch(() => null);
         else await interaction.reply(reply).catch(() => null);
     }

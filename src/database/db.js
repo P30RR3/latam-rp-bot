@@ -79,12 +79,34 @@ const db = {
         return false;
     },
 
+    // ==========================================
+    // WARN ATÓMICO (SIN SOBREESCRITURAS)
+    // ==========================================
     addWarn(discordId, reason, moderatorId) {
         const data = readDB();
         if (!data.warns[discordId]) data.warns[discordId] = [];
+        
         const warn = { id: Date.now().toString(36), reason, moderatorId, date: new Date().toISOString() };
         data.warns[discordId].push(warn);
-        this.logStaffAction(moderatorId, 'warns', `Warn a <@${discordId}>: ${reason}`, 'Cypher');
+
+        // Registro atómico inmediato de los puntos del Staff en el mismo ciclo
+        if (moderatorId && typeof moderatorId === 'string') {
+            if (!data.staffLogs[moderatorId]) {
+                data.staffLogs[moderatorId] = { bans: 0, kicks: 0, timeouts: 0, warns: 0, tickets: 0, total: 0, points: 0, recentActions: [] };
+            }
+            const record = data.staffLogs[moderatorId];
+            record.warns = (record.warns || 0) + 1;
+            record.total = (record.total || 0) + 1;
+            record.points = (record.points || 0) + 1; // 1 punto por warn
+            record.recentActions.unshift({
+                type: 'warns',
+                details: `Warn a <@${discordId}>: ${reason}`,
+                source: 'Cypher',
+                timestamp: new Date().toISOString()
+            });
+            if (record.recentActions.length > 25) record.recentActions.pop();
+        }
+
         writeDB(data);
         return warn;
     },
@@ -101,48 +123,48 @@ const db = {
     },
 
     // ==========================================
-    // REGISTRO DE STAFF (SOLO PARA HUMANOS)
+    // REGISTRO DE STAFF (CON SOPORTE DE TICKETS)
     // ==========================================
     logStaffAction(staffId, type, details, source = 'Manual') {
         if (!staffId || typeof staffId !== 'string') return;
         const data = readDB();
 
         if (!data.staffLogs[staffId]) {
-            data.staffLogs[staffId] = { bans: 0, kicks: 0, timeouts: 0, warns: 0, total: 0, points: 0, recentActions: [] };
+            data.staffLogs[staffId] = { bans: 0, kicks: 0, timeouts: 0, warns: 0, tickets: 0, total: 0, points: 0, recentActions: [] };
         }
 
         const record = data.staffLogs[staffId];
-        const pointsMap = { bans: 5, kicks: 3, timeouts: 2, warns: 1 };
+        
+        // Puntos: Ban = 5 | Kick = 3 | Tickets = 3 | Timeouts = 2 | Warn = 1
+        const pointsMap = { bans: 5, kicks: 3, tickets: 3, timeouts: 2, warns: 1 };
         const gainedPoints = pointsMap[type] || 1;
 
-        if (record[type] !== undefined) record[type]++;
+        record[type] = (record[type] || 0) + 1;
         record.total = (record.total || 0) + 1;
         record.points = (record.points || 0) + gainedPoints;
 
-        // Evitar duplicaciones de la misma sanción en menos de 5 segundos
-        const actionHash = `${type}_${details}_${source}`;
-        const isDuplicate = record.recentActions.slice(0, 4).some(a => a.hash === actionHash);
-
-        if (!isDuplicate) {
-            record.recentActions.unshift({ type, details, source, timestamp: new Date().toISOString(), hash: actionHash });
-            if (record.recentActions.length > 25) record.recentActions.pop();
-        }
+        record.recentActions.unshift({
+            type,
+            details,
+            source,
+            timestamp: new Date().toISOString()
+        });
+        if (record.recentActions.length > 25) record.recentActions.pop();
 
         writeDB(data);
     },
 
-    // Elimina de raíz cualquier bot que se haya colado en los registros anteriores
     purgeBotEntries(botIds) {
         const data = readDB();
-        let purgedCount = 0;
-        for (const botId of botIds) {
-            if (data.staffLogs[botId]) {
-                delete data.staffLogs[botId];
-                purgedCount++;
+        let purged = 0;
+        for (const id of botIds) {
+            if (data.staffLogs[id]) {
+                delete data.staffLogs[id];
+                purged++;
             }
         }
-        if (purgedCount > 0) writeDB(data);
-        return purgedCount;
+        if (purged > 0) writeDB(data);
+        return purged;
     },
 
     getStaffLeaderboard() {
@@ -150,14 +172,16 @@ const db = {
         return Object.entries(data.staffLogs).map(([id, stats]) => ({
             id,
             ...stats,
-            points: stats.points || (stats.bans * 5 + stats.kicks * 3 + stats.timeouts * 2 + stats.warns * 1)
+            tickets: stats.tickets || 0,
+            points: (stats.bans * 5) + (stats.kicks * 3) + ((stats.tickets || 0) * 3) + (stats.timeouts * 2) + (stats.warns * 1)
         })).sort((a, b) => b.points - a.points);
     },
 
     getStaffStats(staffId) {
         const data = readDB();
-        const stats = data.staffLogs[staffId] || { bans: 0, kicks: 0, timeouts: 0, warns: 0, total: 0, points: 0, recentActions: [] };
-        stats.points = stats.points || (stats.bans * 5 + stats.kicks * 3 + stats.timeouts * 2 + stats.warns * 1);
+        const stats = data.staffLogs[staffId] || { bans: 0, kicks: 0, timeouts: 0, warns: 0, tickets: 0, total: 0, points: 0, recentActions: [] };
+        stats.tickets = stats.tickets || 0;
+        stats.points = (stats.bans * 5) + (stats.kicks * 3) + (stats.tickets * 3) + (stats.timeouts * 2) + (stats.warns * 1);
         return stats;
     },
 
