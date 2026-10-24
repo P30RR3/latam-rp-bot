@@ -7,10 +7,10 @@ const DB_DIR = path.join(__dirname, '../../data');
 const DB_PATH = path.join(DB_DIR, 'database.json');
 
 const defaultData = {
-    verifications: {}, // discordId -> { robloxUsername, robloxId, verifiedAt }
-    robloxIndex: {},   // robloxUsername.toLowerCase() -> discordId
-    warns: {},          // discordId -> [ { id, reason, moderatorId, date } ]
-    staffLogs: {},      // staffId -> { bans: 0, kicks: 0, timeouts: 0, warns: 0, actions: [] }
+    verifications: {},
+    robloxIndex: {},
+    warns: {},
+    staffLogs: {},
     serverConfig: {
         brookhavenStatus: 'En Línea',
         brookhavenLink: 'https://www.roblox.com/games/4924922222/Brookhaven-RP',
@@ -79,13 +79,13 @@ const db = {
         return false;
     },
 
-    // Warns
+    // Warns internos
     addWarn(discordId, reason, moderatorId) {
         const data = readDB();
         if (!data.warns[discordId]) data.warns[discordId] = [];
         const warn = { id: Date.now().toString(36), reason, moderatorId, date: new Date().toISOString() };
         data.warns[discordId].push(warn);
-        this.logStaffAction(moderatorId, 'warn', `Warn a <@${discordId}>: ${reason}`);
+        this.logStaffAction(moderatorId, 'warns', `Warn a <@${discordId}>: ${reason}`, 'Internal');
         writeDB(data);
         return warn;
     },
@@ -101,30 +101,51 @@ const db = {
         return true;
     },
 
-    // Staff Tracking & Logs
-    logStaffAction(staffId, type, details) {
+    // REGISTRO DE STAFF UNIVERSAL (CYPHER ENGINE)
+    // Puntos: Ban = 5 pts | Kick = 3 pts | Timeout = 2 pts | Warn = 1 pt
+    logStaffAction(staffId, type, details, source = 'AuditLog') {
+        if (!staffId) return;
         const data = readDB();
         if (!data.staffLogs[staffId]) {
-            data.staffLogs[staffId] = { bans: 0, kicks: 0, timeouts: 0, warns: 0, total: 0, recentActions: [] };
+            data.staffLogs[staffId] = { bans: 0, kicks: 0, timeouts: 0, warns: 0, total: 0, points: 0, recentActions: [] };
         }
         const record = data.staffLogs[staffId];
+        
+        // Asignación de puntos ponderados
+        const pointsMap = { bans: 5, kicks: 3, timeouts: 2, warns: 1 };
+        const gainedPoints = pointsMap[type] || 1;
+
         if (record[type] !== undefined) record[type]++;
         record.total = (record.total || 0) + 1;
-        record.recentActions.unshift({ type, details, timestamp: new Date().toISOString() });
-        if (record.recentActions.length > 20) record.recentActions.pop();
+        record.points = (record.points || 0) + gainedPoints;
+
+        // Evitar duplicados de acciones idénticas en la misma ventana de tiempo
+        const actionHash = `${type}_${details}_${source}`;
+        const isDuplicate = record.recentActions.slice(0, 5).some(a => a.hash === actionHash);
+        if (!isDuplicate) {
+            record.recentActions.unshift({ type, details, source, timestamp: new Date().toISOString(), hash: actionHash });
+            if (record.recentActions.length > 30) record.recentActions.pop();
+        }
+
         writeDB(data);
     },
 
     getStaffLeaderboard() {
         const data = readDB();
-        return Object.entries(data.staffLogs).map(([id, stats]) => ({ id, ...stats })).sort((a, b) => b.total - a.total);
+        return Object.entries(data.staffLogs).map(([id, stats]) => ({
+            id,
+            ...stats,
+            points: stats.points || (stats.bans * 5 + stats.kicks * 3 + stats.timeouts * 2 + stats.warns * 1)
+        })).sort((a, b) => b.points - a.points);
     },
 
     getStaffStats(staffId) {
-        return readDB().staffLogs[staffId] || { bans: 0, kicks: 0, timeouts: 0, warns: 0, total: 0, recentActions: [] };
+        const data = readDB();
+        const stats = data.staffLogs[staffId] || { bans: 0, kicks: 0, timeouts: 0, warns: 0, total: 0, points: 0, recentActions: [] };
+        stats.points = stats.points || (stats.bans * 5 + stats.kicks * 3 + stats.timeouts * 2 + stats.warns * 1);
+        return stats;
     },
 
-    // Brookhaven Server State
     setServerConfig(configUpdate) {
         const data = readDB();
         data.serverConfig = { ...data.serverConfig, ...configUpdate, updatedAt: new Date().toISOString() };
