@@ -79,13 +79,12 @@ const db = {
         return false;
     },
 
-    // Warns internos
     addWarn(discordId, reason, moderatorId) {
         const data = readDB();
         if (!data.warns[discordId]) data.warns[discordId] = [];
         const warn = { id: Date.now().toString(36), reason, moderatorId, date: new Date().toISOString() };
         data.warns[discordId].push(warn);
-        this.logStaffAction(moderatorId, 'warns', `Warn a <@${discordId}>: ${reason}`, 'Internal');
+        this.logStaffAction(moderatorId, 'warns', `Warn a <@${discordId}>: ${reason}`, 'Cypher');
         writeDB(data);
         return warn;
     },
@@ -101,17 +100,18 @@ const db = {
         return true;
     },
 
-    // REGISTRO DE STAFF UNIVERSAL (CYPHER ENGINE)
-    // Puntos: Ban = 5 pts | Kick = 3 pts | Timeout = 2 pts | Warn = 1 pt
-    logStaffAction(staffId, type, details, source = 'AuditLog') {
-        if (!staffId) return;
+    // ==========================================
+    // REGISTRO DE STAFF (SOLO PARA HUMANOS)
+    // ==========================================
+    logStaffAction(staffId, type, details, source = 'Manual') {
+        if (!staffId || typeof staffId !== 'string') return;
         const data = readDB();
+
         if (!data.staffLogs[staffId]) {
             data.staffLogs[staffId] = { bans: 0, kicks: 0, timeouts: 0, warns: 0, total: 0, points: 0, recentActions: [] };
         }
+
         const record = data.staffLogs[staffId];
-        
-        // Asignación de puntos ponderados
         const pointsMap = { bans: 5, kicks: 3, timeouts: 2, warns: 1 };
         const gainedPoints = pointsMap[type] || 1;
 
@@ -119,15 +119,30 @@ const db = {
         record.total = (record.total || 0) + 1;
         record.points = (record.points || 0) + gainedPoints;
 
-        // Evitar duplicados de acciones idénticas en la misma ventana de tiempo
+        // Evitar duplicaciones de la misma sanción en menos de 5 segundos
         const actionHash = `${type}_${details}_${source}`;
-        const isDuplicate = record.recentActions.slice(0, 5).some(a => a.hash === actionHash);
+        const isDuplicate = record.recentActions.slice(0, 4).some(a => a.hash === actionHash);
+
         if (!isDuplicate) {
             record.recentActions.unshift({ type, details, source, timestamp: new Date().toISOString(), hash: actionHash });
-            if (record.recentActions.length > 30) record.recentActions.pop();
+            if (record.recentActions.length > 25) record.recentActions.pop();
         }
 
         writeDB(data);
+    },
+
+    // Elimina de raíz cualquier bot que se haya colado en los registros anteriores
+    purgeBotEntries(botIds) {
+        const data = readDB();
+        let purgedCount = 0;
+        for (const botId of botIds) {
+            if (data.staffLogs[botId]) {
+                delete data.staffLogs[botId];
+                purgedCount++;
+            }
+        }
+        if (purgedCount > 0) writeDB(data);
+        return purgedCount;
     },
 
     getStaffLeaderboard() {

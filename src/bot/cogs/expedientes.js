@@ -3,7 +3,6 @@ const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits, AuditLogEvent } 
 const db = require('../../database/db');
 const { generateAIContent } = require('../../utils/gemini');
 
-// Generador de barras tácticas de progreso
 function createProgressBar(current, max = 50, size = 10) {
     const percentage = Math.min(Math.max(current / max, 0), 1);
     const progress = Math.round(size * percentage);
@@ -103,7 +102,7 @@ module.exports = {
             }
         },
 
-        // 16. Staff Stats (Ficha Táctica Individual)
+        // 16. Staff Stats
         {
             data: new SlashCommandBuilder()
                 .setName('staff-stats')
@@ -111,6 +110,11 @@ module.exports = {
                 .addUserOption(opt => opt.setName('staff').setDescription('Miembro del Staff (opcional)')),
             async execute(interaction) {
                 const target = interaction.options.getUser('staff') || interaction.user;
+
+                if (target.bot) {
+                    return interaction.reply({ content: '❌ Los bots no poseen expedientes de Staff.', ephemeral: true });
+                }
+
                 const stats = db.getStaffStats(target.id);
 
                 const embed = new EmbedBuilder()
@@ -130,7 +134,7 @@ module.exports = {
                         { name: '⏱️ Silencios (Timeouts)', value: `\`\`\`yaml\n${stats.timeouts} registros\n\`\`\``, inline: true },
                         { name: '⚠️ Infracciones (Warns)', value: `\`\`\`yaml\n${stats.warns} registros\n\`\`\``, inline: true },
                         { name: '📊 Total Acciones', value: `\`\`\`yaml\n${stats.total} intervenciones\n\`\`\``, inline: true },
-                        { name: '🌐 Fuentes Detectadas', value: `\`\`\`fix\nDiscord UI, Dyno & Cypher\n\`\`\``, inline: true }
+                        { name: '🌐 Fuentes Auditadas', value: `\`\`\`fix\nDyno, Discord UI & Cypher\n\`\`\``, inline: true }
                     );
 
                 if (stats.recentActions && stats.recentActions.length > 0) {
@@ -145,25 +149,44 @@ module.exports = {
             }
         },
 
-        // 17. Staff Ranking (Tabla de Posiciones Táctica)
+        // 17. Staff Ranking (SOLO HUMANOS)
         {
             data: new SlashCommandBuilder()
                 .setName('staff-ranking')
-                .setDescription('Tabla de honor y ranking de actividad Staff consolidada (Dyno + Discord + Bot)'),
+                .setDescription('Tabla de honor y ranking de actividad Staff consolidada (SOLO HUMANOS)'),
             async execute(interaction) {
-                const board = db.getStaffLeaderboard();
-                if (board.length === 0) {
-                    return interaction.reply({ content: 'No hay actividades registradas aún en el sistema de auditoría.', ephemeral: true });
+                await interaction.deferReply();
+
+                const rawBoard = db.getStaffLeaderboard();
+                if (rawBoard.length === 0) {
+                    return interaction.editReply({ content: 'No hay actividades registradas aún en el sistema de auditoría.' });
                 }
 
-                const topMembers = board.slice(0, 10);
+                // FILTRO ESTRICTO: Descartar bots en tiempo real
+                const humanBoard = [];
+                for (const entry of rawBoard) {
+                    try {
+                        const user = await interaction.client.users.fetch(entry.id).catch(() => null);
+                        if (user && !user.bot && entry.points > 0) {
+                            humanBoard.push({ ...entry, user });
+                        }
+                    } catch {
+                        // Si el usuario no existe, omitir
+                    }
+                }
+
+                if (humanBoard.length === 0) {
+                    return interaction.editReply({ content: 'No se encontraron miembros humanos con sanciones registradas todavía.' });
+                }
+
+                const topMembers = humanBoard.slice(0, 10);
                 let leaderboardText = '';
 
                 topMembers.forEach((staff, index) => {
                     const rankIcons = ['👑', '🥈', '🥉', '🔹', '🔹', '▫️', '▫️', '▫️', '▫️', '▫️'];
                     const icon = rankIcons[index] || '▫️';
                     leaderboardText += 
-                        `${icon} **#${index + 1}** <@${staff.id}>\n` +
+                        `${icon} **#${index + 1}** <@${staff.id}> (\`${staff.user.username}\`)\n` +
                         `╚═> **${staff.points} PTS** • Total: \`${staff.total}\` ` +
                         `*(🔨 ${staff.bans} | 👢 ${staff.kicks} | ⏱️ ${staff.timeouts} | ⚠️ ${staff.warns})*\n\n`;
                 });
@@ -171,78 +194,33 @@ module.exports = {
                 const embed = new EmbedBuilder()
                     .setColor(0xF59E0B)
                     .setAuthor({ name: 'ALTO MANDO • DEPARTAMENTO DE AUDITORÍA', iconURL: interaction.guild.iconURL() })
-                    .setTitle('🏆 CLASIFICACIÓN GENERAL DE ACTIVIDAD STAFF')
+                    .setTitle('🏆 CLASIFICACIÓN GENERAL DE ACTIVIDAD STAFF (HUMANOS)')
                     .setDescription(
-                        `*Auditoría global en tiempo real: incluye sanciones aplicadas vía Dyno, moderación manual de Discord y comandos propios.*\n\n` +
+                        `*Auditoría de moderadores humanos: analiza comandos de chat de Dyno, embeds y moderación manual.*\n\n` +
                         leaderboardText
                     )
                     .setFooter({ text: 'LATAM RP Staff Protocol • 5pts Ban | 3pts Kick | 2pts Timeout | 1pt Warn' })
                     .setTimestamp();
 
-                return interaction.reply({ embeds: [embed] });
+                return interaction.editReply({ embeds: [embed] });
             }
         },
 
-        // 18. Sincronizar Historial Pasado de Dyno y Discord (NUEVO)
+        // 18. Purgar bots del ranking (Comando de limpieza para el Admin)
         {
             data: new SlashCommandBuilder()
-                .setName('staff-sync-audit')
-                .setDescription('[ADMIN] Escanea el historial de auditoría de Discord para importar acciones de Dyno')
-                .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-                .addIntegerOption(opt => opt.setName('cantidad').setDescription('Número de registros a escanear (máx 100)').setMinValue(10).setMaxValue(100)),
+                .setName('staff-purgar-bots')
+                .setDescription('[ADMIN] Elimina instantáneamente a Dyno y a todos los bots del Staff Ranking')
+                .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
             async execute(interaction) {
                 await interaction.deferReply({ ephemeral: true });
 
-                const limit = interaction.options.getInteger('cantidad') || 50;
-                let imported = 0;
+                const botIds = interaction.guild.members.cache.filter(m => m.user.bot).map(m => m.user.id);
+                const count = db.purgeBotEntries(botIds);
 
-                try {
-                    const auditLogs = await interaction.guild.fetchAuditLogs({ limit });
-
-                    for (const entry of auditLogs.entries.values()) {
-                        const { action, executor, target, reason } = entry;
-                        if (!executor) continue;
-
-                        let staffId = executor.id;
-                        let source = 'Discord UI';
-
-                        if (executor.bot) {
-                            source = executor.username;
-                            if (reason) {
-                                const matchId = reason.match(/\b(\d{17,20})\b/);
-                                const matchTag = reason.match(/\[([^\]]+)\]/);
-                                if (matchId) {
-                                    staffId = matchId[1];
-                                } else if (matchTag) {
-                                    const m = interaction.guild.members.cache.find(u => u.user.tag === matchTag[1].trim());
-                                    if (m) staffId = m.id;
-                                }
-                            }
-                        }
-
-                        if (staffId === interaction.client.user.id) continue;
-
-                        if (action === AuditLogEvent.MemberBanAdd) {
-                            db.logStaffAction(staffId, 'bans', `Histórico: Ban a ${target?.tag || target?.id}`, source);
-                            imported++;
-                        } else if (action === AuditLogEvent.MemberKick) {
-                            db.logStaffAction(staffId, 'kicks', `Histórico: Kick a ${target?.tag || target?.id}`, source);
-                            imported++;
-                        } else if (action === AuditLogEvent.MemberUpdate) {
-                            const timeoutChange = entry.changes?.find(c => c.key === 'communication_disabled_until');
-                            if (timeoutChange && timeoutChange.new) {
-                                db.logStaffAction(staffId, 'timeouts', `Histórico: Timeout a ${target?.tag || target?.id}`, source);
-                                imported++;
-                            }
-                        }
-                    }
-
-                    return interaction.editReply({
-                        content: `✅ **Sincronización finalizada:** Se han analizado \`${limit}\` registros de auditoría y se indexaron \`${imported}\` acciones de moderación (incluyendo Dyno y manuales).`
-                    });
-                } catch (err) {
-                    return interaction.editReply({ content: `❌ Error al leer los registros de auditoría: ${err.message}` });
-                }
+                return interaction.editReply({
+                    content: `🧹 **Purga completada:** Se eliminaron \`${count}\` cuentas bot que estaban ensuciando la tabla de posiciones.`
+                });
             }
         }
     ]
