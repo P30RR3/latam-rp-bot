@@ -1,129 +1,73 @@
 // src/utils/gemini.js
 require('dotenv').config();
-
 const axios = require('axios');
 const logger = require('./logger');
 
 async function generateAIContent(prompt, systemInstruction = '') {
-    // 1. Lectura en tiempo de ejecución para evitar variables vacías
-    const environmentApiKey = process.env.GEMINI_API_KEY;
-    const rawApiKey = environmentApiKey || '';
-    const cleanApiKey = rawApiKey.trim().replace(/^["']|["']$/g, '');
+    const rawKey = process.env.GEMINI_API_KEY || '';
+    const cleanKey = rawKey.trim().replace(/^["']|["']$/g, '');
 
-    const hasValidKey = cleanApiKey.length > 0;
-    
-    if (!hasValidKey) {
-        const fallbackMessage = '⚠️ **Modo de Respaldo**: La clave `GEMINI_API_KEY` no ha sido configurada o está vacía en el archivo `.env`.';
-        
-        logger.error('No se encontró GEMINI_API_KEY en las variables de entorno.');
-        
-        const failurePayload = {
+    if (!cleanKey) {
+        logger.error('[GEMINI] La variable GEMINI_API_KEY no existe o está vacía en tu archivo .env');
+        return {
             success: false,
-            text: fallbackMessage,
+            text: '⚠️ **Error de Configuración**: Falta la clave `GEMINI_API_KEY` en el archivo `.env`.',
             isFallback: true
         };
-        
-        return failurePayload;
     }
 
-    // 2. Endpoint nativo v1beta (Sin exponer la clave en la URL)
-    const baseApiEndpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
-    
-    let constructedPrompt = prompt;
-    const hasInstruction = systemInstruction && systemInstruction.trim().length > 0;
-    
-    if (hasInstruction) {
-        const cleanInstruction = systemInstruction.trim();
-        constructedPrompt = `${cleanInstruction}\n\nInput:\n${prompt}`;
+    // Usamos el endpoint nativo compatible con claves AQ. y AIza pasándolo en query y en header
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${cleanKey}`;
+
+    let finalPrompt = prompt;
+    if (systemInstruction && systemInstruction.trim().length > 0) {
+        finalPrompt = `${systemInstruction.trim()}\n\nInput:\n${prompt}`;
     }
 
-    // 3. Estructuración del Payload
-    const textPart = { text: constructedPrompt };
-    const partsArray = [textPart];
-    
-    const contentMessage = {
-        role: 'user',
-        parts: partsArray
-    };
-    
-    const requestBody = {
-        contents: [contentMessage],
+    const payload = {
+        contents: [
+            {
+                role: 'user',
+                parts: [{ text: finalPrompt }]
+            }
+        ],
         generationConfig: {
             temperature: 0.7,
             maxOutputTokens: 1024
         }
     };
 
-    // 4. Cabecera HTTP x-goog-api-key (SOPORTE COMPLETO PARA CLAVES AQ. Y AIza)
-    const requestHeaders = {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': cleanApiKey
-    };
-
-    const requestTimeout = 15000;
-    const axiosConfiguration = {
-        headers: requestHeaders,
-        timeout: requestTimeout
-    };
-
     try {
-        const apiResponse = await axios.post(
-            baseApiEndpoint, 
-            requestBody, 
-            axiosConfiguration
-        );
-        
-        const responseData = apiResponse.data;
-        const candidates = responseData.candidates;
-        
-        const hasCandidates = candidates && candidates.length > 0;
-        if (!hasCandidates) {
-            const noCandidatesMsg = 'El modelo de IA no generó texto de respuesta.';
-            return {
-                success: false,
-                text: noCandidatesMsg,
-                isFallback: true
-            };
+        const res = await axios.post(url, payload, {
+            headers: {
+                'Content-Type': 'application/json',
+                'x-goog-api-key': cleanKey
+            },
+            timeout: 15000
+        });
+
+        const output = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!output) {
+            return { success: false, text: 'No se obtuvo respuesta del modelo Gemini.', isFallback: true };
         }
 
-        const primaryCandidate = candidates[0];
-        const candidateContent = primaryCandidate.content;
-        const candidateParts = candidateContent.parts;
-        const firstPart = candidateParts[0];
-        const outputText = firstPart.text;
-
-        const successPayload = {
-            success: true,
-            text: outputText
-        };
+        return { success: true, text: output };
+    } catch (err) {
+        const errorData = err.response?.data;
+        const statusCode = err.response?.status;
         
-        return successPayload;
+        // DEPURACIÓN EXACTA EN CONSOLA PARA SABER QUÉ DICE GOOGLE
+        console.error('\n========== [DEBUG CRÍTICO GEMINI] ==========');
+        console.error('Código HTTP:', statusCode);
+        console.error('Respuesta de Google:', JSON.stringify(errorData, null, 2));
+        console.error('============================================\n');
 
-    } catch (error) {
-        const responseError = error.response;
-        const statusCode = responseError?.status;
-        const errorData = responseError?.data;
-        const apiErrorMessage = errorData?.error?.message;
-        
-        const errorDetails = apiErrorMessage || error.message;
-        
-        logger.error(`Fallo en Gemini API (Código HTTP ${statusCode || 'ERR'}):`, errorDetails);
-
-        let customUserMessage = `Error de la IA (${statusCode || 'Desconocido'}): ${errorDetails}`;
-        
-        if (statusCode === 400 || statusCode === 401) {
-            customUserMessage = '❌ **Error de autenticación**: Tu clave de Gemini no es válida o ha sido revocada. Genera una nueva en Google AI Studio.';
-        } else if (statusCode === 429) {
-            customUserMessage = '⏳ **Límite de cuota excedido**: La API de Gemini ha alcanzado el límite de peticiones gratuitas. Espera un momento.';
-        }
-
-        const errorPayload = {
+        const errorMsg = errorData?.error?.message || err.message;
+        return {
             success: false,
-            text: customUserMessage,
+            text: `❌ **Error de Gemini API (${statusCode || 'ERR'}):** \`${errorMsg}\`\n*Revisa la consola de Node.js para ver el diagnóstico completo.*`,
             isFallback: true
         };
-        
-        return errorPayload;
     }
 }
 

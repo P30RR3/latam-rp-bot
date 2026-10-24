@@ -1,15 +1,11 @@
 // src/bot/cogs/moderation.js
-const { 
-    SlashCommandBuilder, 
-    PermissionFlagsBits,
-    EmbedBuilder
-} = require('discord.js');
-
+const { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } = require('discord.js');
 const db = require('../../database/db');
 
 module.exports = {
     category: 'Moderación y Seguridad',
     commands: [
+        // 1. BAN
         {
             data: new SlashCommandBuilder()
                 .setName('ban')
@@ -17,110 +13,133 @@ module.exports = {
                 .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers)
                 .addUserOption(opt => opt.setName('usuario').setDescription('Usuario a sancionar').setRequired(true))
                 .addStringOption(opt => opt.setName('razon').setDescription('Motivo de la expulsión')),
-                
             async execute(interaction) {
-                const interactionOptions = interaction.options;
-                const targetMember = interactionOptions.getMember('usuario');
-                const rawReason = interactionOptions.getString('razon');
-                const razon = rawReason || 'Infracción grave de normas';
+                const target = interaction.options.getMember('usuario');
+                const razon = interaction.options.getString('razon') || 'Infracción grave de normas';
                 
-                // MEJORA REAL: Validaciones estrictas de seguridad
-                if (!targetMember) {
-                    const errorMsg = '❌ El usuario no se encuentra en el servidor.';
-                    return interaction.reply({ content: errorMsg, ephemeral: true });
+                if (!target) return interaction.reply({ content: '❌ El usuario no está en el servidor.', ephemeral: true });
+                if (target.id === interaction.user.id) return interaction.reply({ content: '❌ No puedes banearte a ti mismo.', ephemeral: true });
+                if (interaction.member.roles.highest.position <= target.roles.highest.position) {
+                    return interaction.reply({ content: '❌ No tienes jerarquía suficiente para banear a este usuario.', ephemeral: true });
                 }
-                
-                const interactionMember = interaction.member;
-                const targetId = targetMember.id;
-                const interactionMemberId = interactionMember.id;
-                
-                const isSelf = targetId === interactionMemberId;
-                if (isSelf) {
-                    const errorMsg = '❌ No puedes banearte a ti mismo.';
-                    return interaction.reply({ content: errorMsg, ephemeral: true });
-                }
-                
-                const targetHighestRole = targetMember.roles.highest.position;
-                const executorHighestRole = interactionMember.roles.highest.position;
-                
-                if (executorHighestRole <= targetHighestRole) {
-                    const errorMsg = '❌ No tienes jerarquía suficiente para banear a este usuario.';
-                    return interaction.reply({ content: errorMsg, ephemeral: true });
-                }
-                
-                const isBannable = targetMember.bannable;
-                if (!isBannable) {
-                    const errorMsg = '❌ Mi jerarquía como bot es inferior a la del usuario. No puedo banearlo.';
-                    return interaction.reply({ content: errorMsg, ephemeral: true });
-                }
+                if (!target.bannable) return interaction.reply({ content: '❌ Mi rol es inferior al de ese usuario.', ephemeral: true });
 
-                const interactionUser = interaction.user;
-                const interactionUserTag = interactionUser.tag;
-                const guildInstance = interaction.guild;
-                const guildName = guildInstance.name;
-
-                // MEJORA REAL: Notificación por DM antes del ban
                 try {
-                    const dmEmbed = new EmbedBuilder();
-                    dmEmbed.setColor(0xEF4444);
-                    dmEmbed.setTitle(`🔨 Has sido baneado de ${guildName}`);
-                    dmEmbed.setDescription(`**Motivo:** ${razon}\n**Moderador:** ${interactionUserTag}`);
-                    
-                    await targetMember.send({ embeds: [dmEmbed] });
-                } catch (error) {
-                    // DMs cerrados, continuamos con el ban sin crashear
-                }
+                    await target.send({ embeds: [new EmbedBuilder().setColor(0xEF4444).setTitle(`🔨 Has sido baneado de ${interaction.guild.name}`).setDescription(`**Motivo:** ${razon}\n**Moderador:** ${interaction.user.tag}`)] });
+                } catch {}
 
-                const banOptions = { reason: razon };
-                await targetMember.ban(banOptions);
-                
-                const interactionUserId = interactionUser.id;
-                const targetUserObj = targetMember.user;
-                const targetTag = targetUserObj.tag;
-                const logMessage = `Ban a ${targetTag}: ${razon}`;
-                
-                db.logStaffAction(interactionUserId, 'bans', logMessage);
-                
-                const successMessage = `🔨 **${targetTag}** fue baneado permanentemente. Motivo: *${razon}*`;
-                const replyPayload = { content: successMessage };
-                
-                return interaction.reply(replyPayload);
+                await target.ban({ reason: razon });
+                db.logStaffAction(interaction.user.id, 'bans', `Ban a ${target.user.tag}: ${razon}`);
+                return interaction.reply({ content: `🔨 **${target.user.tag}** fue baneado permanentemente. Motivo: *${razon}*` });
             }
         },
 
+        // 2. KICK
+        {
+            data: new SlashCommandBuilder()
+                .setName('kick')
+                .setDescription('[STAFF] Expulsa a un miembro')
+                .setDefaultMemberPermissions(PermissionFlagsBits.KickMembers)
+                .addUserOption(opt => opt.setName('usuario').setDescription('Usuario').setRequired(true))
+                .addStringOption(opt => opt.setName('razon').setDescription('Razón')),
+            async execute(interaction) {
+                const target = interaction.options.getMember('usuario');
+                const razon = interaction.options.getString('razon') || 'Expulsión disciplinaria';
+                
+                if (!target) return interaction.reply({ content: '❌ El usuario no está en el servidor.', ephemeral: true });
+                if (target.id === interaction.user.id) return interaction.reply({ content: '❌ No puedes expulsarte a ti mismo.', ephemeral: true });
+                if (interaction.member.roles.highest.position <= target.roles.highest.position) {
+                    return interaction.reply({ content: '❌ No tienes jerarquía suficiente para expulsar a este usuario.', ephemeral: true });
+                }
+                if (!target.kickable) return interaction.reply({ content: '❌ No puedo expulsar a este miembro por jerarquía.', ephemeral: true });
+
+                try {
+                    await target.send({ embeds: [new EmbedBuilder().setColor(0xF97316).setTitle(`👢 Has sido expulsado de ${interaction.guild.name}`).setDescription(`**Motivo:** ${razon}\n**Moderador:** ${interaction.user.tag}`)] });
+                } catch {}
+
+                await target.kick(razon);
+                db.logStaffAction(interaction.user.id, 'kicks', `Kick a ${target.user.tag}: ${razon}`);
+                return interaction.reply({ content: `👢 **${target.user.tag}** ha sido expulsado del servidor.` });
+            }
+        },
+
+        // 3. TIMEOUT
+        {
+            data: new SlashCommandBuilder()
+                .setName('timeout')
+                .setDescription('[STAFF] Silencia y aísla temporalmente a un miembro')
+                .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
+                .addUserOption(opt => opt.setName('usuario').setDescription('Miembro').setRequired(true))
+                .addIntegerOption(opt => opt.setName('minutos').setDescription('Minutos de silencio').setMinValue(1).setMaxValue(10080).setRequired(true))
+                .addStringOption(opt => opt.setName('razon').setDescription('Causa')),
+            async execute(interaction) {
+                const member = interaction.options.getMember('usuario');
+                const mins = interaction.options.getInteger('minutos');
+                const razon = interaction.options.getString('razon') || 'Aislamiento preventivo';
+                
+                if (!member) return interaction.reply({ content: '❌ Miembro no encontrado.', ephemeral: true });
+                if (interaction.member.roles.highest.position <= member.roles.highest.position) {
+                    return interaction.reply({ content: '❌ Jerarquía insuficiente para silenciar a este usuario.', ephemeral: true });
+                }
+                if (!member.moderatable) return interaction.reply({ content: '❌ No puedo silenciar a este miembro por jerarquía.', ephemeral: true });
+
+                try {
+                    await member.send({ embeds: [new EmbedBuilder().setColor(0xFBBF24).setTitle(`⏱️ Has sido silenciado en ${interaction.guild.name}`).setDescription(`**Duración:** ${mins} minutos\n**Motivo:** ${razon}\n**Moderador:** ${interaction.user.tag}`)] });
+                } catch {}
+
+                await member.timeout(mins * 60 * 1000, razon);
+                db.logStaffAction(interaction.user.id, 'timeouts', `Timeout ${mins}m a ${member.user.tag}`);
+                return interaction.reply({ content: `⏱️ **${member.user.tag}** aislado durante \`${mins}\` minutos.` });
+            }
+        },
+
+        // 4. UNTIMEOUT
+        {
+            data: new SlashCommandBuilder()
+                .setName('untimeout')
+                .setDescription('[STAFF] Remueve el aislamiento de un miembro')
+                .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
+                .addUserOption(opt => opt.setName('usuario').setDescription('Miembro').setRequired(true)),
+            async execute(interaction) {
+                const member = interaction.options.getMember('usuario');
+                if (!member) return interaction.reply({ content: '❌ Miembro no encontrado.', ephemeral: true });
+                if (!member.moderatable) return interaction.reply({ content: '❌ Jerarquía insuficiente.', ephemeral: true });
+                
+                await member.timeout(null);
+                return interaction.reply({ content: `🔊 Aislamiento retirado de **${member.user.tag}**.` });
+            }
+        },
+
+        // 5. LIMPIAR
         {
             data: new SlashCommandBuilder()
                 .setName('limpiar')
                 .setDescription('[STAFF] Purga mensajes en lote')
                 .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
                 .addIntegerOption(opt => opt.setName('cantidad').setDescription('Número de mensajes (1-100)').setMinValue(1).setMaxValue(100).setRequired(true)),
-                
             async execute(interaction) {
-                const deferPayload = { ephemeral: true };
-                await interaction.deferReply(deferPayload);
-                
-                const interactionOptions = interaction.options;
-                const count = interactionOptions.getInteger('cantidad');
-                const interactionChannel = interaction.channel;
-                const filterOldMessages = true;
-                
-                // MEJORA REAL: Manejo de error de 14 días de Discord
+                await interaction.deferReply({ ephemeral: true });
+                const count = interaction.options.getInteger('cantidad');
                 try {
-                    const deletedMessages = await interactionChannel.bulkDelete(count, filterOldMessages);
-                    const deletedSize = deletedMessages.size;
-                    
-                    if (deletedSize === 0) {
-                        const warningMsg = '⚠️ No se borró ningún mensaje. Es posible que todos tengan más de 14 días de antigüedad (Límite de Discord).';
-                        return interaction.editReply({ content: warningMsg });
-                    }
-                    
-                    const successMessage = `🧹 Se eliminaron \`${deletedSize}\` mensajes exitosamente.`;
-                    return interaction.editReply({ content: successMessage });
-                } catch (error) {
-                    const errorDetail = error.message;
-                    const errorMessage = `❌ Ocurrió un error al intentar borrar los mensajes: ${errorDetail}`;
-                    return interaction.editReply({ content: errorMessage });
+                    const deleted = await interaction.channel.bulkDelete(count, true);
+                    return interaction.editReply({ content: `🧹 Se eliminaron \`${deleted.size}\` mensajes.` });
+                } catch (err) {
+                    return interaction.editReply({ content: `❌ Error: ${err.message}` });
                 }
+            }
+        },
+
+        // 6. SLOWMODE
+        {
+            data: new SlashCommandBuilder()
+                .setName('slowmode')
+                .setDescription('[STAFF] Configura el modo lento del canal')
+                .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels)
+                .addIntegerOption(opt => opt.setName('segundos').setDescription('Segundos de espera (0 = desactivado)').setMinValue(0).setMaxValue(21600).setRequired(true)),
+            async execute(interaction) {
+                const secs = interaction.options.getInteger('segundos');
+                await interaction.channel.setRateLimitPerUser(secs);
+                return interaction.reply({ content: `⏱️ Modo lento establecido en \`${secs}s\`.` });
             }
         }
     ]
