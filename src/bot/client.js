@@ -1,104 +1,71 @@
 // src/bot/client.js
-const { 
-    Client, 
-    GatewayIntentBits, 
-    EmbedBuilder, 
-    ActionRowBuilder, 
-    ButtonBuilder, 
-    ButtonStyle, 
-    SlashCommandBuilder, 
-    PermissionFlagsBits, 
-    REST, 
-    Routes 
-} = require('discord.js');
-
+const { Client, GatewayIntentBits, REST, Routes } = require('discord.js');
+const fs = require('fs');
+const path = require('path');
 const config = require('../config/env');
 const logger = require('../utils/logger');
 
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMembers // OBLIGATORIO: Activar en Discord Developer Portal -> Bot -> Privileged Intents
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent
     ]
 });
 
-// Definición del comando slash para crear el panel
-const commands = [
-    new SlashCommandBuilder()
-        .setName('setup-panel')
-        .setDescription('Despliega el panel oficial de verificación con V-Sync de LATAM RP')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-].map(cmd => cmd.toJSON());
+// Almacén de comandos en memoria
+client.commands = new Map();
+const slashCommandsData = [];
 
-// Función que crea el Embed y el Botón visualmente estéticos
-function createVerificationCard() {
-    const embed = new EmbedBuilder()
-        .setColor(0x2563EB) // Azul táctico neón
-        .setAuthor({ 
-            name: 'LATAM ROLEPLAY • SISTEMA DE IDENTIDAD', 
-            iconURL: 'https://cdn.discordapp.com/emojis/1069695420188987483.webp?size=96&quality=lossless' // Icono decorativo de escudo
-        })
-        .setTitle('🛡️ VINCULACIÓN OFICIAL & VERIFICACIÓN V-SYNC')
-        .setDescription(
-            `> **¡Bienvenido a la ciudad de LATAM RP!**\n` +
-            `Para garantizar una experiencia de rol segura, ordenada y libre de multicuentas o atacantes, es obligatorio vincular tu cuenta de **Roblox** con tu perfil de **Discord**.\n\n` +
-            `**📋 PASOS PARA VERIFICARTE:**\n` +
-            `**1.** Presiona el botón táctico **\`Vincular Cuenta (V-Sync)\`** que ves abajo.\n` +
-            `**2.** Autoriza tu identidad a través del portal oficial de Discord.\n` +
-            `**3.** Ingresa tu usuario de Roblox en nuestra terminal web y resuelve el filtro anti-bot.\n\n` +
-            `**🎁 BENEFICIOS Y ASIGNACIÓN INMEDIATA:**\n` +
-            `▫️ **Rol:** \`Ciudadano Oficial LATAM RP\`\n` +
-            `▫️ **Rol:** \`Acceso Brookhaven Roleplay\`\n` +
-            `▫️ **Sincronización:** Modificación automática de tu apodo a \`[TuRoblox] | TuUsuario\`\n\n` +
-            `⚠️ *Si tienes problemas con la vinculación, contacta con la Administración abriendo un ticket.*`
-        )
-        .setImage('https://images.alphacoders.com/133/1338018.png') // Banner estilo FiveM / Ciudad nocturna
-        .setFooter({ 
-            text: 'LATAM RP Security Protocol • V-Sync Engine v2.4.0', 
-            iconURL: 'https://cdn.discordapp.com/emojis/994440954003456041.webp?size=96&quality=lossless'
-        })
-        .setTimestamp();
+// Carga modular de Cogs
+const cogsPath = path.join(__dirname, 'cogs');
+const cogFiles = fs.readdirSync(cogsPath).filter(file => file.endsWith('.js'));
 
-    // Botón de enlace directo a la web OAuth2
-    const verifyButton = new ButtonBuilder()
-        .setLabel('Vincular Cuenta (V-Sync)')
-        .setStyle(ButtonStyle.Link)
-        .setURL(`${config.baseUrl}/auth/login`)
-        .setEmoji('🔗');
-
-    const row = new ActionRowBuilder().addComponents(verifyButton);
-
-    return { embeds: [embed], components: [row] };
+for (const file of cogFiles) {
+    const cog = require(path.join(cogsPath, file));
+    if (cog.commands && Array.isArray(cog.commands)) {
+        for (const cmd of cog.commands) {
+            client.commands.set(cmd.data.name, cmd);
+            slashCommandsData.push(cmd.data.toJSON());
+        }
+        logger.info(`Cog cargado: [${cog.category}] con ${cog.commands.length} comandos.`);
+    }
 }
 
 client.once('ready', async () => {
-    logger.success(`Bot conectado como ${client.user.tag}`);
+    logger.success(`Cypher Engine conectado como ${client.user.tag}`);
 
-    // Registrar comando slash en el servidor configurado
+    const rest = new REST({ version: '10' }).setToken(config.botToken);
     try {
-        const rest = new REST({ version: '10' }).setToken(config.botToken);
-        logger.system('Sincronizando comandos Slash (/setup-panel)...');
-        await rest.put(
-            Routes.applicationGuildCommands(config.clientId, config.guildId),
-            { body: commands }
-        );
-        logger.success('Comando /setup-panel registrado correctamente.');
+        if (config.clientId && config.guildId) {
+            await rest.put(
+                Routes.applicationGuildCommands(config.clientId, config.guildId),
+                { body: slashCommandsData }
+            );
+            logger.success(`30 Comandos Slash sincronizados con éxito en el servidor [${config.guildId}].`);
+        }
     } catch (err) {
-        logger.error('Error al registrar comandos Slash:', err);
+        logger.error('Error al registrar comandos slash:', err.message);
     }
 });
 
-// Manejo de la interacción del comando /setup-panel
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
 
-    if (interaction.commandName === 'setup-panel') {
-        const panel = createVerificationCard();
-        await interaction.channel.send(panel);
-        await interaction.reply({ 
-            content: '✅ Panel de verificación enviado correctamente a este canal.', 
-            ephemeral: true 
-        });
+    const cmd = client.commands.get(interaction.commandName);
+    if (!cmd) return;
+
+    try {
+        await cmd.execute(interaction);
+    } catch (err) {
+        logger.error(`Excepción ejecutando /${interaction.commandName}:`, err.message);
+        const reply = { content: '❌ Ocurrió un error al procesar esta instrucción.', ephemeral: true };
+        if (interaction.deferred || interaction.replied) {
+            await interaction.editReply(reply).catch(() => null);
+        } else {
+            await interaction.reply(reply).catch(() => null);
+        }
     }
 });
 
