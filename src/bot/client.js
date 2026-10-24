@@ -37,121 +37,117 @@ if (fs.existsSync(cogsPath)) {
 }
 
 // =========================================================================
-// 1. DETECTOR DE COMANDOS EN CHAT (DRACOGUARD, DYNO, CARL, ETC.)
+// MOTOR HEURÍSTICO UNIVERSAL Y DEDUPLICACIÓN (CYPHER ENGINE)
 // =========================================================================
-client.on(Events.MessageCreate, async (message) => {
-    if (!message.guild || message.author.bot) return;
+const dedupCache = new Set();
 
+const WARN_KEYWORDS = [/\bwarn(ed|ing)?\b/i, /\badvert(encia|ido)?\b/i, /\binfracci[oó]n\b/i, /\bstrike\b/i, /\baviso\b/i];
+const MOD_IDENTIFIERS = [/(?:moderador|moderator|staff|sancionado por|warned by|issued by|responsable|autor)\s*[:=-]?\s*(?:<@!?(\d{17,20})>|\b(\d{17,20})\b)/i];
+const TARGET_IDENTIFIERS = [/(?:usuario|user|member|miembro|target|sancionado|infractor)\s*[:=-]?\s*(?:<@!?(\d{17,20})>|\b(\d{17,20})\b)/i];
+
+async function processModerationMessage(message) {
+    if (!message.guild || message.author.id === client.user.id) return;
+
+    // 1. Detección de Tickets (Mantenemos tu lógica original que ya funcionaba)
     const content = message.content.trim().toLowerCase();
-
-    // Detección de Tickets (!claim, ?claim, -claim, !reclamar)
-    if (content.match(/^[?!.-](claim|reclamar|atender)\b/)) {
-        db.logStaffAction(message.author.id, 'tickets', `Ticket atendido en #${message.channel.name}`, 'Chat');
-        logger.info(`[TICKETS] Reclamo registrado para: ${message.author.tag}`);
+    if (!message.author.bot && content.match(/^[?!.-](claim|reclamar|atender)\b/)) {
+        const dedupKey = `ticket:${message.guildId}:${message.author.id}:${Math.floor(Date.now() / 60000)}`;
+        if (!dedupCache.has(dedupKey)) {
+            dedupCache.add(dedupKey);
+            db.logStaffAction(message.author.id, 'tickets', `Ticket atendido en #${message.channel.name}`, 'Chat');
+            logger.info(`[TICKETS] Reclamo registrado para: ${message.author.tag}`);
+            setTimeout(() => dedupCache.delete(dedupKey), 65000);
+        }
         return;
     }
 
-    // Prefijos ampliados: d!, dg!, ?, !, ., -, ;
-    const match = content.match(/^(?:d!|dg!|[?!.\-;])(warn|advertir|aviso|mute|tempmute|timeout|kick|ban)\b/i);
-    if (!match) return;
+    // 2. Análisis Profundo de Embeds (Bots de Moderación)
+    if (!message.author.bot) return; // Solo analizamos respuestas de bots para warns
 
-    const member = message.member;
-    if (!member) return;
+    const textSegments = [];
+    if (message.content) textSegments.push(message.content);
 
-    const isStaff = member.permissions.has(PermissionFlagsBits.ModerateMembers) ||
-                    member.permissions.has(PermissionFlagsBits.KickMembers) ||
-                    member.permissions.has(PermissionFlagsBits.BanMembers) ||
-                    member.permissions.has(PermissionFlagsBits.ManageMessages);
-
-    if (!isStaff) return;
-
-    const cmd = match[1].toLowerCase();
-    const targetMention = message.mentions.users.first();
-    const targetName = targetMention ? targetMention.tag : 'Usuario';
-
-    if (cmd === 'warn' || cmd === 'advertir' || cmd === 'aviso') {
-        db.logStaffAction(message.author.id, 'warns', `Warn vía comando a ${targetName}`, 'Chat-Prefix');
-        logger.info(`[STAFF TRACKER] Warn por prefijo acreditado a: ${message.author.tag}`);
-    } else if (cmd === 'mute' || cmd === 'tempmute' || cmd === 'timeout') {
-        db.logStaffAction(message.author.id, 'timeouts', `Mute a ${targetName}`, 'Chat-Prefix');
-    } else if (cmd === 'kick') {
-        db.logStaffAction(message.author.id, 'kicks', `Kick a ${targetName}`, 'Chat-Prefix');
-    } else if (cmd === 'ban') {
-        db.logStaffAction(message.author.id, 'bans', `Ban a ${targetName}`, 'Chat-Prefix');
-    }
-});
-
-// =========================================================================
-// 2. INTERCEPTOR HEURÍSTICO DE RESPUESTAS Y LOGS (DRACOGUARD, DYNO, ETC.)
-// =========================================================================
-client.on(Events.MessageCreate, async (message) => {
-    if (!message.guild || !message.author.bot) return;
-
-    // Ignorar si es el propio bot de LATAM RP
-    if (message.author.id === client.user.id) return;
-
-    // 1. Análisis de Embeds generados por DracoGuard, Dyno, Ticket Tool, etc.
     if (message.embeds && message.embeds.length > 0) {
         for (const embed of message.embeds) {
-            const title = (embed.title || embed.author?.name || '').toLowerCase();
-            const description = (embed.description || '').toLowerCase();
-            const footer = (embed.footer?.text || '').toLowerCase();
-            const fieldsText = (embed.fields || []).map(f => `${f.name} ${f.value}`).join(' ').toLowerCase();
-            const fullContent = `${title} ${description} ${footer} ${fieldsText}`;
-
-            // --- CASO A: WARN DETECTADO DE DRACOGUARD / DYNO ---
-            if (fullContent.includes('warn') || fullContent.includes('advertencia') || fullContent.includes('advertido') || fullContent.includes('aviso')) {
-                let staffId = null;
-
-                // Buscar mención de moderador en fields
-                for (const f of embed.fields || []) {
-                    const fname = f.name.toLowerCase();
-                    if (fname.includes('moderador') || fname.includes('staff') || fname.includes('responsable') || fname.includes('autor')) {
-                        const m = f.value.match(/<@!?(\d{17,20})>/) || f.value.match(/\b(\d{17,20})\b/);
-                        if (m) staffId = m[1];
-                    }
-                }
-
-                // Si no estaba en fields, buscar en la descripción o footer
-                if (!staffId) {
-                    const descMatch = (embed.description || '').match(/(?:moderador|staff|responsable|por)[:\s]*<@!?(\d{17,20})>/i);
-                    if (descMatch) staffId = descMatch[1];
-                }
-
-                if (staffId) {
-                    const staffUser = await client.users.fetch(staffId).catch(() => null);
-                    if (staffUser && !staffUser.bot) {
-                        db.logStaffAction(staffId, 'warns', `Warn detectado de ${message.author.username}`, message.author.username);
-                        logger.success(`[DRACOGUARD/DYNO INTERCEPTOR] Warn acreditado a Staff Humano: ${staffUser.tag}`);
-                    }
-                }
-            }
-
-            // --- CASO B: TICKET RECLAMADO DE CUALQUIER BOT ---
-            if (fullContent.includes('claimed by') || fullContent.includes('reclamado por') || fullContent.includes('atendido por')) {
-                const matchUser = fullContent.match(/<@!?(\d{17,20})>/);
-                if (matchUser) {
-                    const staffId = matchUser[1];
-                    const staffUser = await client.users.fetch(staffId).catch(() => null);
-                    if (staffUser && !staffUser.bot) {
-                        db.logStaffAction(staffId, 'tickets', `Ticket reclamado en #${message.channel.name}`, message.author.username);
-                        logger.success(`[TICKETS] Reclamo detectado de ${message.author.username} para: ${staffUser.tag}`);
-                    }
+            if (embed.title) textSegments.push(embed.title);
+            if (embed.description) textSegments.push(embed.description);
+            if (embed.author?.name) textSegments.push(embed.author.name);
+            if (embed.footer?.text) textSegments.push(embed.footer.text);
+            if (embed.fields) {
+                for (const field of embed.fields) {
+                    textSegments.push(`${field.name}: ${field.value}`);
                 }
             }
         }
     }
 
-    // 2. Análisis de mensajes de texto plano de Dyno o DracoGuard (Sin Embed)
-    const rawText = message.content.toLowerCase();
-    if (rawText.includes('warned') || rawText.includes('advertido')) {
-        const matchUser = message.content.match(/<@!?(\d{17,20})>/);
-        // Si hay una interacción previa en el canal por un staff, se indexa
+    const fullText = textSegments.join('\n');
+    if (!fullText.trim()) return;
+
+    // A. Detección de Tickets reclamados por botones/embeds
+    if (fullText.match(/(?:claimed by|reclamado por|atendido por)\s*[:=-]?\s*<@!?(\d{17,20})>/i)) {
+        const matchUser = fullText.match(/<@!?(\d{17,20})>/);
+        if (matchUser) {
+            const staffId = matchUser[1];
+            const dedupKey = `ticket_bot:${message.guildId}:${staffId}:${Math.floor(Date.now() / 60000)}`;
+            if (!dedupCache.has(dedupKey)) {
+                dedupCache.add(dedupKey);
+                db.logStaffAction(staffId, 'tickets', `Ticket reclamado en #${message.channel.name}`, message.author.username);
+                logger.success(`[TICKETS] Reclamo detectado vía ${message.author.username} para ID: ${staffId}`);
+                setTimeout(() => dedupCache.delete(dedupKey), 65000);
+            }
+        }
+        return;
     }
+
+    // B. Detección de Warns (DracoGuard, Dyno, Carl, etc.)
+    const isWarn = WARN_KEYWORDS.some(regex => regex.test(fullText));
+    if (!isWarn) return;
+
+    let staffId = null;
+    for (const regex of MOD_IDENTIFIERS) {
+        const match = fullText.match(regex);
+        if (match) {
+            staffId = match[1] || match[2];
+            break;
+        }
+    }
+
+    if (!staffId) return;
+
+    let targetId = 'unknown';
+    for (const regex of TARGET_IDENTIFIERS) {
+        const match = fullText.match(regex);
+        if (match) {
+            targetId = match[1] || match[2];
+            break;
+        }
+    }
+
+    // Ventana de deduplicación de 30 segundos (Evita doble conteo si el bot manda log y mensaje público)
+    const windowBucket = Math.floor(Date.now() / 30000);
+    const deduplicationKey = `warn:${message.guildId}:${staffId}:${targetId}:${windowBucket}`;
+
+    if (dedupCache.has(deduplicationKey)) return;
+    dedupCache.add(deduplicationKey);
+    setTimeout(() => dedupCache.delete(deduplicationKey), 35000);
+
+    const staffUser = await client.users.fetch(staffId).catch(() => null);
+    if (staffUser && !staffUser.bot) {
+        db.logStaffAction(staffId, 'warns', `Warn detectado vía ${message.author.username}`, message.author.username);
+        logger.success(`[HEURISTIC ENGINE] Warn acreditado a Staff Humano: ${staffUser.tag} (Bot: ${message.author.username})`);
+    }
+}
+
+// Escuchar creación y edición de mensajes (Para bots que editan el embed milisegundos después)
+client.on(Events.MessageCreate, processModerationMessage);
+client.on(Events.MessageUpdate, async (oldMessage, newMessage) => {
+    if (newMessage.partial) await newMessage.fetch().catch(() => null);
+    processModerationMessage(newMessage);
 });
 
 // =========================================================================
-// 3. AUDITORÍA NATIVA DE DISCORD
+// AUDITORÍA NATIVA DE DISCORD (BANS, KICKS, TIMEOUTS)
 // =========================================================================
 client.on(Events.GuildAuditLogEntryCreate, async (auditEntry, guild) => {
     try {
@@ -182,6 +178,12 @@ client.on(Events.GuildAuditLogEntryCreate, async (auditEntry, guild) => {
         if (!responsibleStaffId) return;
         const verifiedHuman = await client.users.fetch(responsibleStaffId).catch(() => null);
         if (!verifiedHuman || verifiedHuman.bot) return;
+
+        // Deduplicación para Audit Logs
+        const dedupKey = `audit:${action}:${guild.id}:${responsibleStaffId}:${targetId}:${Math.floor(Date.now() / 30000)}`;
+        if (dedupCache.has(dedupKey)) return;
+        dedupCache.add(dedupKey);
+        setTimeout(() => dedupCache.delete(dedupKey), 35000);
 
         if (action === AuditLogEvent.MemberBanAdd) {
             db.logStaffAction(responsibleStaffId, 'bans', `Ban a <@${targetId}>`, sourceName);

@@ -20,116 +20,105 @@ const defaultData = {
     }
 };
 
+// ==========================================
+// MOTOR DE PERSISTENCIA EN MEMORIA (CERO CORRUPCIÓN)
+// ==========================================
+let memoryDB = null;
+let writeTimeout = null;
+
 function initDB() {
+    if (memoryDB) return; // Ya está cargada en memoria
     if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
-    if (!fs.existsSync(DB_PATH)) fs.writeFileSync(DB_PATH, JSON.stringify(defaultData, null, 2), 'utf8');
-}
-
-function readDB() {
-    initDB();
-    try {
-        const raw = fs.readFileSync(DB_PATH, 'utf8');
-        return { ...defaultData, ...JSON.parse(raw) };
-    } catch (e) {
-        logger.error('Error leyendo base de datos:', e.message);
-        return defaultData;
+    if (!fs.existsSync(DB_PATH)) {
+        fs.writeFileSync(DB_PATH, JSON.stringify(defaultData, null, 2), 'utf8');
+        memoryDB = JSON.parse(JSON.stringify(defaultData));
+    } else {
+        try {
+            const raw = fs.readFileSync(DB_PATH, 'utf8');
+            memoryDB = { ...defaultData, ...JSON.parse(raw) };
+        } catch (e) {
+            logger.error('Error crítico leyendo DB, restaurando default:', e.message);
+            memoryDB = JSON.parse(JSON.stringify(defaultData));
+        }
     }
 }
 
-function writeDB(data) {
-    initDB();
-    try {
-        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2), 'utf8');
-        return true;
-    } catch (e) {
-        logger.error('Error escribiendo en base de datos:', e.message);
-        return false;
-    }
+function scheduleWrite() {
+    if (writeTimeout) return;
+    writeTimeout = setTimeout(() => {
+        try {
+            fs.writeFileSync(DB_PATH, JSON.stringify(memoryDB, null, 2), 'utf8');
+        } catch (e) {
+            logger.error('Error escribiendo en base de datos:', e.message);
+        }
+        writeTimeout = null;
+    }, 150); // Debounce de 150ms para agrupar transacciones simultáneas
 }
+
+// Inicializar al requerir el módulo
+initDB();
 
 const db = {
     saveVerification(discordId, robloxUsername, robloxId) {
-        const data = readDB();
         const record = { discordId, robloxUsername, robloxId: robloxId || null, verifiedAt: new Date().toISOString() };
-        data.verifications[discordId] = record;
-        data.robloxIndex[robloxUsername.toLowerCase()] = discordId;
-        writeDB(data);
+        memoryDB.verifications[discordId] = record;
+        memoryDB.robloxIndex[robloxUsername.toLowerCase()] = discordId;
+        scheduleWrite();
         return record;
     },
 
     getVerificationByDiscordId(discordId) {
-        return readDB().verifications[discordId] || null;
+        return memoryDB.verifications[discordId] || null;
     },
 
     getVerificationByRobloxUser(username) {
-        const data = readDB();
-        const discordId = data.robloxIndex[username.toLowerCase()];
-        return discordId ? data.verifications[discordId] : null;
+        const discordId = memoryDB.robloxIndex[username.toLowerCase()];
+        return discordId ? memoryDB.verifications[discordId] : null;
     },
 
     deleteVerification(discordId) {
-        const data = readDB();
-        const existing = data.verifications[discordId];
+        const existing = memoryDB.verifications[discordId];
         if (existing) {
-            delete data.robloxIndex[existing.robloxUsername.toLowerCase()];
-            delete data.verifications[discordId];
-            writeDB(data);
+            delete memoryDB.robloxIndex[existing.robloxUsername.toLowerCase()];
+            delete memoryDB.verifications[discordId];
+            scheduleWrite();
             return true;
         }
         return false;
     },
 
-    // ==========================================
-    // WARN ATÓMICO CON REFLEJO INMEDIATO EN STAFF
-    // ==========================================
     addWarn(discordId, reason, moderatorId) {
-        const data = readDB();
-        if (!data.warns[discordId]) data.warns[discordId] = [];
+        if (!memoryDB.warns[discordId]) memoryDB.warns[discordId] = [];
 
         const warn = { id: Date.now().toString(36), reason, moderatorId, date: new Date().toISOString() };
-        data.warns[discordId].push(warn);
+        memoryDB.warns[discordId].push(warn);
 
         if (moderatorId && typeof moderatorId === 'string') {
-            if (!data.staffLogs[moderatorId]) {
-                data.staffLogs[moderatorId] = { bans: 0, kicks: 0, timeouts: 0, warns: 0, tickets: 0, total: 0, points: 0, recentActions: [] };
-            }
-            const record = data.staffLogs[moderatorId];
-            record.warns = (record.warns || 0) + 1;
-            record.total = (record.total || 0) + 1;
-            record.points = (record.points || 0) + 1;
-            record.recentActions.unshift({
-                type: 'warns',
-                details: `Warn a <@${discordId}>: ${reason}`,
-                source: 'Cypher',
-                timestamp: new Date().toISOString()
-            });
-            if (record.recentActions.length > 25) record.recentActions.pop();
+            this.logStaffAction(moderatorId, 'warns', `Warn a <@${discordId}>: ${reason}`, 'Cypher Nativo');
+        } else {
+            scheduleWrite();
         }
-
-        writeDB(data);
         return warn;
     },
 
     getWarns(discordId) {
-        return readDB().warns[discordId] || [];
+        return memoryDB.warns[discordId] || [];
     },
 
     clearWarns(discordId) {
-        const data = readDB();
-        data.warns[discordId] = [];
-        writeDB(data);
+        memoryDB.warns[discordId] = [];
+        scheduleWrite();
         return true;
     },
 
     logStaffAction(staffId, type, details, source = 'Manual') {
         if (!staffId || typeof staffId !== 'string') return;
-        const data = readDB();
 
-        if (!data.staffLogs[staffId]) {
-            data.staffLogs[staffId] = { bans: 0, kicks: 0, timeouts: 0, warns: 0, tickets: 0, total: 0, points: 0, recentActions: [] };
+        if (!memoryDB.staffLogs[staffId]) {
+            memoryDB.staffLogs[staffId] = { bans: 0, kicks: 0, timeouts: 0, warns: 0, tickets: 0, total: 0, points: 0, recentActions: [] };
         }
 
-        const record = data.staffLogs[staffId];
+        const record = memoryDB.staffLogs[staffId];
         const pointsMap = { bans: 5, kicks: 3, tickets: 3, timeouts: 2, warns: 1 };
         const gainedPoints = pointsMap[type] || 1;
 
@@ -143,38 +132,35 @@ const db = {
             source,
             timestamp: new Date().toISOString()
         });
+        
         if (record.recentActions.length > 25) record.recentActions.pop();
 
-        writeDB(data);
+        scheduleWrite();
     },
 
     purgeBotEntries(botIds) {
-        const data = readDB();
         let purged = 0;
         for (const id of botIds) {
-            if (data.staffLogs[id]) {
-                delete data.staffLogs[id];
+            if (memoryDB.staffLogs[id]) {
+                delete memoryDB.staffLogs[id];
                 purged++;
             }
         }
-        if (purged > 0) writeDB(data);
+        if (purged > 0) scheduleWrite();
         return purged;
     },
 
     getStaffLeaderboard() {
-        const data = readDB();
-        return Object.entries(data.staffLogs).map(([id, stats]) => ({
-            id,
-            ...stats,
-            tickets: stats.tickets || 0,
-            warns: stats.warns || 0,
-            points: (stats.bans * 5) + (stats.kicks * 3) + ((stats.tickets || 0) * 3) + (stats.timeouts * 2) + ((stats.warns || 0) * 1)
-        })).sort((a, b) => b.points - a.points);
+        return Object.entries(memoryDB.staffLogs).map(([id, stats]) => {
+            const tickets = stats.tickets || 0;
+            const warns = stats.warns || 0;
+            const points = (stats.bans * 5) + (stats.kicks * 3) + (tickets * 3) + (stats.timeouts * 2) + (warns * 1);
+            return { id, ...stats, tickets, warns, points };
+        }).sort((a, b) => b.points - a.points);
     },
 
     getStaffStats(staffId) {
-        const data = readDB();
-        const stats = data.staffLogs[staffId] || { bans: 0, kicks: 0, timeouts: 0, warns: 0, tickets: 0, total: 0, points: 0, recentActions: [] };
+        const stats = memoryDB.staffLogs[staffId] || { bans: 0, kicks: 0, timeouts: 0, warns: 0, tickets: 0, total: 0, points: 0, recentActions: [] };
         stats.tickets = stats.tickets || 0;
         stats.warns = stats.warns || 0;
         stats.points = (stats.bans * 5) + (stats.kicks * 3) + (stats.tickets * 3) + (stats.timeouts * 2) + (stats.warns * 1);
@@ -182,14 +168,13 @@ const db = {
     },
 
     setServerConfig(configUpdate) {
-        const data = readDB();
-        data.serverConfig = { ...data.serverConfig, ...configUpdate, updatedAt: new Date().toISOString() };
-        writeDB(data);
-        return data.serverConfig;
+        memoryDB.serverConfig = { ...memoryDB.serverConfig, ...configUpdate, updatedAt: new Date().toISOString() };
+        scheduleWrite();
+        return memoryDB.serverConfig;
     },
 
     getServerConfig() {
-        return readDB().serverConfig;
+        return memoryDB.serverConfig;
     }
 };
 

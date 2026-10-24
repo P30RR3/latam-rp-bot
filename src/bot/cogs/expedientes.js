@@ -12,7 +12,6 @@ function createProgressBar(current, max = 50, size = 10) {
 module.exports = {
     category: 'Expediente y Auditoría Staff',
     commands: [
-        // 13. Warn con confirmación inmediata de puntos
         {
             data: new SlashCommandBuilder()
                 .setName('warn')
@@ -24,7 +23,7 @@ module.exports = {
                 const target = interaction.options.getUser('usuario');
                 const razon = interaction.options.getString('razon');
 
-                // Guarda la infracción y suma el punto
+                // La DB ahora es atómica en memoria, esto se refleja al instante
                 db.addWarn(target.id, razon, interaction.user.id);
                 const updatedStats = db.getStaffStats(interaction.user.id);
 
@@ -46,7 +45,6 @@ module.exports = {
             }
         },
 
-        // 14. Ver Warns
         {
             data: new SlashCommandBuilder()
                 .setName('warns')
@@ -84,7 +82,6 @@ module.exports = {
             }
         },
 
-        // 15. Limpiar warns
         {
             data: new SlashCommandBuilder()
                 .setName('clearwarns')
@@ -98,11 +95,10 @@ module.exports = {
             }
         },
 
-        // 16. Staff Stats
         {
             data: new SlashCommandBuilder()
                 .setName('staff-stats')
-                .setDescription('Despliega la ficha táctica y métricas de un Staff (incluye tickets y warns de DracoGuard)')
+                .setDescription('Despliega la ficha táctica y métricas de un Staff')
                 .addUserOption(opt => opt.setName('staff').setDescription('Miembro del Staff (opcional)')),
             async execute(interaction) {
                 const target = interaction.options.getUser('staff') || interaction.user;
@@ -142,11 +138,10 @@ module.exports = {
             }
         },
 
-        // 17. Staff Ranking
         {
             data: new SlashCommandBuilder()
                 .setName('staff-ranking')
-                .setDescription('Tabla de clasificación Staff consolidada (Tickets + Sanciones de DracoGuard/Dyno)'),
+                .setDescription('Tabla de clasificación Staff consolidada'),
             async execute(interaction) {
                 await interaction.deferReply();
 
@@ -194,7 +189,6 @@ module.exports = {
             }
         },
 
-        // 18. Reclamar Ticket (Nativo)
         {
             data: new SlashCommandBuilder()
                 .setName('ticket-reclamar')
