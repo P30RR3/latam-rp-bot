@@ -1,37 +1,67 @@
 // src/bot/client.js
-const { Client, GatewayIntentBits, REST, Routes, AuditLogEvent, Events, PermissionFlagsBits } = require('discord.js');
+const { 
+    Client, 
+    GatewayIntentBits, 
+    REST, 
+    Routes, 
+    AuditLogEvent, 
+    Events, 
+    ActivityType,
+    PermissionFlagsBits
+} = require('discord.js');
+
 const fs = require('fs');
 const path = require('path');
 const config = require('../config/env');
 const logger = require('../utils/logger');
 const db = require('../database/db');
 
-const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent, // ¡ESTO DEBE ESTAR ACTIVO EN EL PORTAL DE DISCORD!
-        GatewayIntentBits.GuildModeration
-    ]
-});
+const clientIntents = [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildModeration
+];
 
+const clientOptions = {
+    intents: clientIntents
+};
+
+const client = new Client(clientOptions);
 client.commands = new Map();
-const cogsPath = path.join(__dirname, 'cogs');
 
-if (fs.existsSync(cogsPath)) {
-    const cogFiles = fs.readdirSync(cogsPath).filter(file => file.endsWith('.js'));
+const cogsPath = path.join(__dirname, 'cogs');
+const dedupCache = new Set();
+
+// Carga de Cogs expandida y con manejo de errores detallado
+const checkCogsDirectory = fs.existsSync(cogsPath);
+if (checkCogsDirectory) {
+    const allFiles = fs.readdirSync(cogsPath);
+    const cogFiles = allFiles.filter(file => file.endsWith('.js'));
+    
     for (const file of cogFiles) {
+        const fullPath = path.join(cogsPath, file);
         try {
-            const cog = require(path.join(cogsPath, file));
-            if (cog.commands && Array.isArray(cog.commands)) {
-                for (const cmd of cog.commands) {
-                    if (cmd.data && cmd.data.name) client.commands.set(cmd.data.name, cmd);
+            const cogModule = require(fullPath);
+            const hasCommands = cogModule.commands;
+            const isArray = Array.isArray(hasCommands);
+            
+            if (hasCommands && isArray) {
+                const commandsList = cogModule.commands;
+                for (const cmd of commandsList) {
+                    const cmdData = cmd.data;
+                    const cmdName = cmdData.name;
+                    if (cmdData && cmdName) {
+                        client.commands.set(cmdName, cmd);
+                    }
                 }
-                logger.info(`Cog cargado: [${cog.category || file}]`);
+                const categoryName = cogModule.category || file;
+                logger.info(`Cog cargado exitosamente: [${categoryName}]`);
             }
         } catch (err) {
-            logger.error(`Error cargando cog ${file}:`, err.message);
+            const errorMessage = err.message;
+            logger.error(`Error crítico cargando cog ${file}:`, errorMessage);
         }
     }
 }
@@ -39,96 +69,179 @@ if (fs.existsSync(cogsPath)) {
 // =========================================================================
 // MOTOR HEURÍSTICO UNIVERSAL Y DEDUPLICACIÓN (CYPHER ENGINE V2)
 // =========================================================================
-const dedupCache = new Set();
 
-// Palabras clave ampliadas
-const WARN_KEYWORDS = [/\bwarn(ed|ing|s)?\b/i, /\badvert(encia|ido|ir)?\b/i, /\binfracci[oó]n\b/i, /\bstrike\b/i, /\baviso\b/i];
-const MOD_IDENTIFIERS = [/(?:moderador|moderator|staff|sancionado por|warned by|issued by|responsable|autor|oficial)\s*[:=-]?\s*(?:<@!?(\d{17,20})>|\b(\d{17,20})\b)/i];
-const TARGET_IDENTIFIERS = [/(?:usuario|user|member|miembro|target|sancionado|infractor)\s*[:=-]?\s*(?:<@!?(\d{17,20})>|\b(\d{17,20})\b)/i];
+const WARN_KEYWORDS = [
+    /\bwarn(ed|ing|s)?\b/i, 
+    /\badvert(encia|ido|ir)?\b/i, 
+    /\binfracci[oó]n\b/i, 
+    /\bstrike\b/i, 
+    /\baviso\b/i
+];
+
+const MOD_IDENTIFIERS = [
+    /(?:moderador|moderator|staff|sancionado por|warned by|issued by|responsable|autor|oficial)\s*[:=-]?\s*(?:<@!?(\d{17,20})>|\b(\d{17,20})\b)/i
+];
+
+const TARGET_IDENTIFIERS = [
+    /(?:usuario|user|member|miembro|target|sancionado|infractor)\s*[:=-]?\s*(?:<@!?(\d{17,20})>|\b(\d{17,20})\b)/i
+];
 
 async function processModerationMessage(message) {
-    if (!message.guild || message.author.id === client.user.id) return;
+    const guildInstance = message.guild;
+    const messageAuthor = message.author;
+    const authorId = messageAuthor.id;
+    const clientId = client.user.id;
+    
+    if (!guildInstance) return;
+    if (authorId === clientId) return;
+
+    const rawContent = message.content;
+    const trimmedContent = rawContent.trim();
+    const lowerContent = trimmedContent.toLowerCase();
+    const isBotAuthor = messageAuthor.bot;
 
     // 1. Detección de Tickets (Chat normal)
-    const content = message.content.trim().toLowerCase();
-    if (!message.author.bot && content.match(/^[?!.-](claim|reclamar|atender)\b/)) {
-        const dedupKey = `ticket:${message.guildId}:${message.author.id}:${Math.floor(Date.now() / 60000)}`;
-        if (!dedupCache.has(dedupKey)) {
+    const ticketRegex = /^[?!.-](claim|reclamar|atender)\b/;
+    const isTicketCommand = lowerContent.match(ticketRegex);
+    
+    if (!isBotAuthor && isTicketCommand) {
+        const guildId = message.guildId;
+        const channelName = message.channel.name;
+        const timeMinute = Math.floor(Date.now() / 60000);
+        const dedupKey = `ticket:${guildId}:${authorId}:${timeMinute}`;
+        
+        const isCached = dedupCache.has(dedupKey);
+        if (!isCached) {
             dedupCache.add(dedupKey);
-            db.logStaffAction(message.author.id, 'tickets', `Ticket atendido en #${message.channel.name}`, 'Chat');
-            logger.info(`[TICKETS] Reclamo registrado para: ${message.author.tag}`);
-            setTimeout(() => dedupCache.delete(dedupKey), 65000);
+            const logDetails = `Ticket atendido en #${channelName}`;
+            db.logStaffAction(authorId, 'tickets', logDetails, 'Chat');
+            
+            const authorTag = messageAuthor.tag;
+            logger.info(`[TICKETS] Reclamo registrado para: ${authorTag}`);
+            
+            const cacheTimeout = 65000;
+            setTimeout(() => {
+                dedupCache.delete(dedupKey);
+            }, cacheTimeout);
         }
         return;
     }
 
     // 2. Análisis Profundo de Embeds (Solo Bots)
-    if (!message.author.bot) return;
+    if (!isBotAuthor) return;
 
     const textSegments = [];
-    if (message.content) textSegments.push(message.content);
+    if (rawContent) {
+        textSegments.push(rawContent);
+    }
 
-    if (message.embeds && message.embeds.length > 0) {
-        for (const embed of message.embeds) {
-            if (embed.title) textSegments.push(embed.title);
-            if (embed.description) textSegments.push(embed.description);
-            if (embed.author?.name) textSegments.push(embed.author.name);
-            if (embed.footer?.text) textSegments.push(embed.footer.text);
-            if (embed.fields) {
-                for (const field of embed.fields) {
-                    textSegments.push(`${field.name}: ${field.value}`);
+    const messageEmbeds = message.embeds;
+    const hasEmbeds = messageEmbeds && messageEmbeds.length > 0;
+    
+    if (hasEmbeds) {
+        for (const embed of messageEmbeds) {
+            const embedTitle = embed.title;
+            if (embedTitle) textSegments.push(embedTitle);
+            
+            const embedDesc = embed.description;
+            if (embedDesc) textSegments.push(embedDesc);
+            
+            const embedAuthor = embed.author;
+            if (embedAuthor && embedAuthor.name) textSegments.push(embedAuthor.name);
+            
+            const embedFooter = embed.footer;
+            if (embedFooter && embedFooter.text) textSegments.push(embedFooter.text);
+            
+            const embedFields = embed.fields;
+            if (embedFields) {
+                for (const field of embedFields) {
+                    const fieldName = field.name;
+                    const fieldValue = field.value;
+                    const combinedField = `${fieldName}: ${fieldValue}`;
+                    textSegments.push(combinedField);
                 }
             }
         }
     }
 
-    // Limpiamos TODO el formato Markdown (**, __, ``, ~~) para que el Regex no se asfixie
-    const rawText = textSegments.join('\n');
-    const fullText = rawText.replace(/[*_`~]/g, '').toLowerCase();
+    const joinedText = textSegments.join('\n');
+    const markdownRegex = /[*_`~]/g;
+    const cleanText = joinedText.replace(markdownRegex, '');
+    const fullText = cleanText.toLowerCase();
     
-    if (!fullText.trim()) return;
+    const isTextEmpty = !fullText.trim();
+    if (isTextEmpty) return;
 
     // A. Detección de Tickets reclamados por botones/embeds
-    if (fullText.match(/(?:claimed by|reclamado por|atendido por)\s*[:=-]?\s*<@!?(\d{17,20})>/i)) {
-        const matchUser = fullText.match(/<@!?(\d{17,20})>/);
+    const claimRegex = /(?:claimed by|reclamado por|atendido por)\s*[:=-]?\s*<@!?(\d{17,20})>/i;
+    const isClaimedEmbed = fullText.match(claimRegex);
+    
+    if (isClaimedEmbed) {
+        const userMatchRegex = /<@!?(\d{17,20})>/;
+        const matchUser = fullText.match(userMatchRegex);
+        
         if (matchUser) {
             const staffId = matchUser[1];
-            const dedupKey = `ticket_bot:${message.guildId}:${staffId}:${Math.floor(Date.now() / 60000)}`;
-            if (!dedupCache.has(dedupKey)) {
+            const guildId = message.guildId;
+            const timeMinute = Math.floor(Date.now() / 60000);
+            const dedupKey = `ticket_bot:${guildId}:${staffId}:${timeMinute}`;
+            
+            const isCached = dedupCache.has(dedupKey);
+            if (!isCached) {
                 dedupCache.add(dedupKey);
-                db.logStaffAction(staffId, 'tickets', `Ticket reclamado en #${message.channel.name}`, message.author.username);
-                logger.success(`[TICKETS] Reclamo detectado vía ${message.author.username} para ID: ${staffId}`);
-                setTimeout(() => dedupCache.delete(dedupKey), 65000);
+                const channelName = message.channel.name;
+                const botUsername = messageAuthor.username;
+                const logDetails = `Ticket reclamado en #${channelName}`;
+                
+                db.logStaffAction(staffId, 'tickets', logDetails, botUsername);
+                logger.success(`[TICKETS] Reclamo detectado vía ${botUsername} para ID: ${staffId}`);
+                
+                const cacheTimeout = 65000;
+                setTimeout(() => {
+                    dedupCache.delete(dedupKey);
+                }, cacheTimeout);
             }
         }
         return;
     }
 
     // B. Detección de Warns (DracoGuard, Dyno, Carl, etc.)
-    const isWarn = WARN_KEYWORDS.some(regex => regex.test(fullText));
+    let isWarn = false;
+    for (const regex of WARN_KEYWORDS) {
+        const testResult = regex.test(fullText);
+        if (testResult) {
+            isWarn = true;
+            break;
+        }
+    }
+    
     if (!isWarn) return;
 
     let staffId = null;
+    const messageInteraction = message.interaction;
 
-    // ESTRATEGIA 1: Interacciones Nativas (Infalible si el Staff usó un Slash Command de Dyno/DracoGuard)
-    if (message.interaction && message.interaction.user) {
-        staffId = message.interaction.user.id;
+    if (messageInteraction) {
+        const interactionUser = messageInteraction.user;
+        if (interactionUser) {
+            staffId = interactionUser.id;
+        }
     }
 
-    // ESTRATEGIA 2: Extracción por Regex en el texto limpio
     if (!staffId) {
         for (const regex of MOD_IDENTIFIERS) {
             const match = fullText.match(regex);
             if (match) {
-                staffId = match[1] || match[2];
+                const firstGroup = match[1];
+                const secondGroup = match[2];
+                staffId = firstGroup || secondGroup;
                 break;
             }
         }
     }
 
-    // Si detectó que es un warn pero no encontró al Staff, lo imprime en consola para depurar
     if (!staffId) {
-        console.log(`\n[CYPHER DEBUG] ⚠️ Se detectó un Warn de ${message.author.username}, pero no se encontró la ID del Staff.`);
+        const botUsername = messageAuthor.username;
+        console.log(`\n[CYPHER DEBUG] ⚠️ Se detectó un Warn de ${botUsername}, pero no se encontró la ID del Staff.`);
         console.log(`[CYPHER DEBUG] Texto analizado (sin markdown):\n${fullText}\n`);
         return;
     }
@@ -137,30 +250,54 @@ async function processModerationMessage(message) {
     for (const regex of TARGET_IDENTIFIERS) {
         const match = fullText.match(regex);
         if (match) {
-            targetId = match[1] || match[2];
+            const firstGroup = match[1];
+            const secondGroup = match[2];
+            targetId = firstGroup || secondGroup;
             break;
         }
     }
 
-    // Ventana de deduplicación de 30 segundos
+    const guildId = message.guildId;
     const windowBucket = Math.floor(Date.now() / 30000);
-    const deduplicationKey = `warn:${message.guildId}:${staffId}:${targetId}:${windowBucket}`;
+    const deduplicationKey = `warn:${guildId}:${staffId}:${targetId}:${windowBucket}`;
 
-    if (dedupCache.has(deduplicationKey)) return;
+    const isWarnCached = dedupCache.has(deduplicationKey);
+    if (isWarnCached) return;
+    
     dedupCache.add(deduplicationKey);
-    setTimeout(() => dedupCache.delete(deduplicationKey), 35000);
+    const warnCacheTimeout = 35000;
+    setTimeout(() => {
+        dedupCache.delete(deduplicationKey);
+    }, warnCacheTimeout);
 
-    const staffUser = await client.users.fetch(staffId).catch(() => null);
-    if (staffUser && !staffUser.bot) {
-        db.logStaffAction(staffId, 'warns', `Warn detectado vía ${message.author.username}`, message.author.username);
-        logger.success(`[HEURISTIC ENGINE] Warn acreditado a Staff Humano: ${staffUser.tag} (Bot: ${message.author.username})`);
+    try {
+        const staffUser = await client.users.fetch(staffId);
+        const isStaffBot = staffUser.bot;
+        
+        if (staffUser && !isStaffBot) {
+            const botUsername = messageAuthor.username;
+            const logDetails = `Warn detectado vía ${botUsername}`;
+            db.logStaffAction(staffId, 'warns', logDetails, botUsername);
+            
+            const staffTag = staffUser.tag;
+            logger.success(`[HEURISTIC ENGINE] Warn acreditado a Staff Humano: ${staffTag} (Bot: ${botUsername})`);
+        }
+    } catch (error) {
+        // Usuario no encontrado, se ignora
     }
 }
 
-// Escuchar creación y edición de mensajes
 client.on(Events.MessageCreate, processModerationMessage);
+
 client.on(Events.MessageUpdate, async (oldMessage, newMessage) => {
-    if (newMessage.partial) await newMessage.fetch().catch(() => null);
+    const isPartial = newMessage.partial;
+    if (isPartial) {
+        try {
+            await newMessage.fetch();
+        } catch (error) {
+            return;
+        }
+    }
     processModerationMessage(newMessage);
 });
 
@@ -169,7 +306,24 @@ client.on(Events.MessageUpdate, async (oldMessage, newMessage) => {
 // =========================================================================
 client.on(Events.GuildAuditLogEntryCreate, async (auditEntry, guild) => {
     try {
-        const { action, executorId, targetId, reason } = auditEntry;
+        const clientId = client.user.id;
+        const botMember = await guild.members.fetch(clientId).catch(() => null);
+        if (!botMember) return;
+        
+        const auditPermission = PermissionFlagsBits.ViewAuditLog;
+        const hasAuditPerms = botMember.permissions.has(auditPermission);
+        
+        if (!hasAuditPerms) {
+            const guildName = guild.name;
+            logger.warn(`[SEGURIDAD] El bot no tiene permisos para ver el Registro de Auditoría en ${guildName}.`);
+            return;
+        }
+
+        const actionType = auditEntry.action;
+        const executorId = auditEntry.executorId;
+        const targetId = auditEntry.targetId;
+        const reasonText = auditEntry.reason;
+        
         if (!executorId) return;
 
         const executorUser = await client.users.fetch(executorId).catch(() => null);
@@ -177,80 +331,176 @@ client.on(Events.GuildAuditLogEntryCreate, async (auditEntry, guild) => {
 
         let responsibleStaffId = null;
         let sourceName = 'Discord UI';
+        const isExecutorBot = executorUser.bot;
 
-        if (!executorUser.bot) {
+        if (!isExecutorBot) {
             responsibleStaffId = executorUser.id;
         } else {
-            sourceName = executorUser.username;
-            if (reason) {
-                const matchId = reason.match(/\b(\d{17,20})\b/);
-                const matchTag = reason.match(/\[([^\]]+)\]/);
-                if (matchId) responsibleStaffId = matchId[1];
-                else if (matchTag) {
-                    const found = guild.members.cache.find(m => m.user.tag === matchTag[1].trim() || m.user.username === matchTag[1].trim());
-                    if (found) responsibleStaffId = found.id;
+            const executorUsername = executorUser.username;
+            sourceName = executorUsername;
+            
+            if (reasonText) {
+                const idRegex = /\b(\d{17,20})\b/;
+                const matchId = reasonText.match(idRegex);
+                
+                const tagRegex = /\[([^\]]+)\]/;
+                const matchTag = reasonText.match(tagRegex);
+                
+                if (matchId) {
+                    responsibleStaffId = matchId[1];
+                } else if (matchTag) {
+                    const extractedTag = matchTag[1].trim();
+                    const guildMembers = guild.members.cache;
+                    const foundMember = guildMembers.find(m => {
+                        const userTag = m.user.tag;
+                        const userName = m.user.username;
+                        return userTag === extractedTag || userName === extractedTag;
+                    });
+                    
+                    if (foundMember) {
+                        responsibleStaffId = foundMember.id;
+                    }
                 }
             }
         }
 
         if (!responsibleStaffId) return;
+        
         const verifiedHuman = await client.users.fetch(responsibleStaffId).catch(() => null);
-        if (!verifiedHuman || verifiedHuman.bot) return;
+        const isVerifiedBot = verifiedHuman ? verifiedHuman.bot : true;
+        if (!verifiedHuman || isVerifiedBot) return;
 
-        const dedupKey = `audit:${action}:${guild.id}:${responsibleStaffId}:${targetId}:${Math.floor(Date.now() / 30000)}`;
-        if (dedupCache.has(dedupKey)) return;
+        const guildId = guild.id;
+        const timeBucket = Math.floor(Date.now() / 30000);
+        const dedupKey = `audit:${actionType}:${guildId}:${responsibleStaffId}:${targetId}:${timeBucket}`;
+        
+        const isAuditCached = dedupCache.has(dedupKey);
+        if (isAuditCached) return;
+        
         dedupCache.add(dedupKey);
-        setTimeout(() => dedupCache.delete(dedupKey), 35000);
+        const auditCacheTimeout = 35000;
+        setTimeout(() => {
+            dedupCache.delete(dedupKey);
+        }, auditCacheTimeout);
 
-        if (action === AuditLogEvent.MemberBanAdd) {
-            db.logStaffAction(responsibleStaffId, 'bans', `Ban a <@${targetId}>`, sourceName);
-        } else if (action === AuditLogEvent.MemberKick) {
-            db.logStaffAction(responsibleStaffId, 'kicks', `Kick a <@${targetId}>`, sourceName);
-        } else if (action === AuditLogEvent.MemberUpdate) {
-            const timeoutChange = auditEntry.changes?.find(c => c.key === 'communication_disabled_until');
-            if (timeoutChange && timeoutChange.new) {
-                db.logStaffAction(responsibleStaffId, 'timeouts', `Timeout a <@${targetId}>`, sourceName);
+        if (actionType === AuditLogEvent.MemberBanAdd) {
+            const logMsg = `Ban a <@${targetId}>`;
+            db.logStaffAction(responsibleStaffId, 'bans', logMsg, sourceName);
+        } else if (actionType === AuditLogEvent.MemberKick) {
+            const logMsg = `Kick a <@${targetId}>`;
+            db.logStaffAction(responsibleStaffId, 'kicks', logMsg, sourceName);
+        } else if (actionType === AuditLogEvent.MemberUpdate) {
+            const auditChanges = auditEntry.changes;
+            if (auditChanges) {
+                const timeoutChange = auditChanges.find(c => c.key === 'communication_disabled_until');
+                if (timeoutChange && timeoutChange.new) {
+                    const logMsg = `Timeout a <@${targetId}>`;
+                    db.logStaffAction(responsibleStaffId, 'timeouts', logMsg, sourceName);
+                }
             }
         }
     } catch (err) {
-        logger.error('Error en auditoría:', err.message);
+        const errorMsg = err.message;
+        logger.error('Error en auditoría:', errorMsg);
     }
 });
 
-client.once('clientReady', async () => {
-    logger.success(`Cypher Engine conectado como ${client.user.tag}`);
+client.once(Events.ClientReady, async () => {
+    const botTag = client.user.tag;
+    logger.success(`Cypher Engine conectado exitosamente como ${botTag}`);
 
-    const botIds = client.users.cache.filter(u => u.bot).map(u => u.id);
-    db.purgeBotEntries(botIds);
+    // MEJORA: Sistema de Presencia Dinámica (Status Rotativo)
+    const activitiesList = [
+        { name: 'LATAM RP', type: ActivityType.Watching },
+        { name: 'Auditoría Staff', type: ActivityType.Playing },
+        { name: 'Verificaciones V-Sync', type: ActivityType.Listening }
+    ];
+    
+    let activityIndex = 0;
+    const rotationInterval = 15000;
+    
+    setInterval(() => {
+        const currentActivity = activitiesList[activityIndex];
+        const activityName = currentActivity.name;
+        const activityType = currentActivity.type;
+        
+        client.user.setActivity(activityName, { type: activityType });
+        
+        const nextIndex = activityIndex + 1;
+        activityIndex = nextIndex % activitiesList.length;
+    }, rotationInterval);
 
-    const rest = new REST({ version: '10' }).setToken(config.botToken);
-    const slashCommandsPayload = Array.from(client.commands.values()).map(cmd => cmd.data.toJSON());
+    const allUsers = client.users.cache;
+    const botUsers = allUsers.filter(u => u.bot);
+    const botIdsArray = botUsers.map(u => u.id);
+    
+    db.purgeBotEntries(botIdsArray);
+
+    const restVersion = '10';
+    const restClient = new REST({ version: restVersion });
+    const botToken = config.botToken;
+    restClient.setToken(botToken);
+    
+    const commandsValues = Array.from(client.commands.values());
+    const slashCommandsPayload = commandsValues.map(cmd => {
+        const cmdData = cmd.data;
+        return cmdData.toJSON();
+    });
 
     try {
-        if (config.clientId && config.guildId) {
-            await rest.put(
-                Routes.applicationGuildCommands(config.clientId, config.guildId),
-                { body: slashCommandsPayload }
-            );
-            logger.success(`30 Comandos Slash sincronizados con éxito.`);
+        const clientId = config.clientId;
+        const guildId = config.guildId;
+        
+        if (clientId && guildId) {
+            const route = Routes.applicationGuildCommands(clientId, guildId);
+            const putPayload = { body: slashCommandsPayload };
+            
+            await restClient.put(route, putPayload);
+            const commandsCount = slashCommandsPayload.length;
+            logger.success(`${commandsCount} Comandos Slash sincronizados con éxito en el servidor.`);
         }
     } catch (err) {
-        logger.error('Error registrando comandos:', err.message);
+        const errorMsg = err.message;
+        logger.error('Error registrando comandos:', errorMsg);
     }
 });
 
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
-    const cmd = client.commands.get(interaction.commandName);
+client.on(Events.InteractionCreate, async (interaction) => {
+    const isChatCommand = interaction.isChatInputCommand();
+    const isButtonInteraction = interaction.isButton();
+    
+    if (isButtonInteraction) {
+        const customId = interaction.customId;
+        if (customId === 'help_verify') {
+            const helpMessage = 'ℹ️ **Guía de Verificación:**\n1. Haz clic en el botón azul.\n2. Inicia sesión con Discord.\n3. Escribe tu nombre de Roblox.\nSi tienes problemas, abre un ticket.';
+            const replyPayload = { content: helpMessage, ephemeral: true };
+            return interaction.reply(replyPayload);
+        }
+    }
+    
+    if (!isChatCommand) return;
+    
+    const commandName = interaction.commandName;
+    const cmd = client.commands.get(commandName);
+    
     if (!cmd) return;
 
     try {
         await cmd.execute(interaction);
     } catch (err) {
-        logger.error(`Excepción en /${interaction.commandName}:`, err.message);
-        const reply = { content: '❌ Error al procesar el comando.', ephemeral: true };
-        if (interaction.deferred || interaction.replied) await interaction.editReply(reply).catch(() => null);
-        else await interaction.reply(reply).catch(() => null);
+        const errorMsg = err.message;
+        logger.error(`Excepción en /${commandName}:`, errorMsg);
+        
+        const replyPayload = { content: '❌ Error interno al procesar el comando.', ephemeral: true };
+        
+        const isDeferred = interaction.deferred;
+        const isReplied = interaction.replied;
+        
+        if (isDeferred || isReplied) {
+            await interaction.editReply(replyPayload).catch(() => null);
+        } else {
+            await interaction.reply(replyPayload).catch(() => null);
+        }
     }
 });
 

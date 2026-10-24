@@ -1,7 +1,7 @@
 {
   "name": "latam-rp-verify",
-  "version": "1.0.0",
-  "description": "Sistema de verificación V-Sync para LATAM RP con Discord OAuth2 y Roblox",
+  "version": "3.0.0",
+  "description": "Sistema de verificación V-Sync para LATAM RP con Discord OAuth2, Roblox y Cypher Engine",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
@@ -17,5 +17,7 @@
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
-  }
+  },
+  "author": "Cypher",
+  "license": "MIT"
 }
